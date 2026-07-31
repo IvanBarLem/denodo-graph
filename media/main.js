@@ -374,11 +374,20 @@
     const common = { name, animate: false, fit: true, padding: 40 };
     let opts = common;
     if (name === 'cose') {
-      opts = Object.assign({}, common, {
-        nodeRepulsion: 6000,
-        idealEdgeLength: 60,
-        numIter: cy.nodes().length > 800 ? 300 : 1000
-      });
+      // Force (cose) does O(n²·iterations) repulsion with no spatial index, so a
+      // fixed iteration count freezes on large graphs (~12 s at 2.5k nodes).
+      // Budget the iterations against node count for a fixed time ceiling
+      // (~1.5 s): full quality on small graphs, degrading gracefully on big ones
+      // instead of locking up the webview.
+      const N = Math.max(1, cy.nodes().length);
+      const numIter = Math.max(30, Math.min(1000, Math.round(2.3e8 / (N * N))));
+      if (numIter < 300) {
+        setStatus(
+          'Force layout capped at ' + numIter + ' iterations for ' + N +
+            ' nodes to stay responsive — use Hierarchy for a cleaner large-graph layout.'
+        );
+      }
+      opts = Object.assign({}, common, { nodeRepulsion: 6000, idealEdgeLength: 60, numIter });
     } else if (name === 'concentric') {
       opts = Object.assign({}, common, {
         concentric: (n) => n.degree(),
@@ -689,6 +698,8 @@
       html += '<button data-act="copy" title="Copy this element\'s VQL">Copy VQL</button>';
       html +=
         '<button data-act="copyDeps" title="Copy this element and its whole upstream path (down to data sources, incl. required types)">Copy VQL + deps</button>';
+      html +=
+        '<button data-act="isolate" title="Show only this element and its upstream dependencies — the full path down to data sources">Isolate path</button>';
     }
     html += '<button data-act="expand">Expand neighbours</button>';
     html += '</div>';
@@ -722,6 +733,7 @@
       btn.addEventListener('click', () => {
         const act = btn.dataset.act;
         if (act === 'reveal') vscode.postMessage({ type: 'reveal', id: d.id });
+        if (act === 'isolate') vscode.postMessage({ type: 'isolate', id: d.id });
         if (act === 'expand') vscode.postMessage({ type: 'expand', id: d.id });
         if (act === 'copy') vscode.postMessage({ type: 'copyVql', id: d.id, withDeps: false });
         if (act === 'copyDeps') vscode.postMessage({ type: 'copyVql', id: d.id, withDeps: true });
@@ -842,6 +854,29 @@
     el.banner.classList.add('hidden');
   }
 
+  // Banner shown while a single view's lineage is isolated, with a link back to
+  // the full graph (a reload re-parses and restores full/focus mode).
+  function showIsolateBanner(centerId, count, truncated) {
+    const deps = Math.max(0, count - 1);
+    let html =
+      '<b>Isolated path:</b> ' +
+      escapeHtml(centerId) +
+      ' + ' +
+      deps +
+      ' upstream dependenc' +
+      (deps === 1 ? 'y' : 'ies') +
+      (truncated ? ' <i>(truncated at limit)</i>' : '') +
+      ' &nbsp;·&nbsp; <a id="showAllLink" style="cursor:pointer;text-decoration:underline">Show all</a>';
+    showBanner(html);
+    const link = document.getElementById('showAllLink');
+    if (link) {
+      link.addEventListener('click', () => {
+        setStatus('Reloading…');
+        vscode.postMessage({ type: 'reload' });
+      });
+    }
+  }
+
   // ---------------- messages ----------------
 
   window.addEventListener('message', (event) => {
@@ -893,10 +928,14 @@
         render(msg.nodes, msg.edges);
         break;
       case 'subgraph':
-        hideBanner();
         if (msg.merge) {
+          hideBanner();
           mergeSubgraph(msg.nodes, msg.edges);
+        } else if (msg.isolated) {
+          render(msg.nodes, msg.edges);
+          showIsolateBanner(msg.center, msg.nodes.length, msg.truncated);
         } else {
+          hideBanner();
           render(msg.nodes, msg.edges);
         }
         if (msg.center) {

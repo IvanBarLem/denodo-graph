@@ -178,6 +178,9 @@ export class GraphPanel {
       case 'expand':
         this.post({ type: 'subgraph', center: msg.id, ...this.subgraph([msg.id], 1, 800), merge: true });
         break;
+      case 'isolate':
+        this.post({ type: 'subgraph', center: msg.id, isolated: true, ...this.upstreamClosure(msg.id) });
+        break;
       case 'copyVql':
         this.copyVql(msg.id, !!msg.withDeps);
         break;
@@ -272,6 +275,51 @@ export class GraphPanel {
       }
     }
     return { nodes, edges };
+  }
+
+  /**
+   * The isolated lineage of an element: the element plus its entire upstream
+   * dependency tree, transitively, down to the data sources. Unlike `subgraph`
+   * this follows dependencies only (never dependents) and has no depth limit,
+   * so it captures the whole path feeding into the element — which is what makes
+   * it useful for analysing a single path in a crowded graph. Capped at
+   * `maxNodes` so a pathological lineage can't blow up the render.
+   */
+  private upstreamClosure(
+    id: string,
+    maxNodes = 5000
+  ): { nodes: LiteNode[]; edges: LiteEdge[]; truncated: boolean } {
+    const g = this.graph!;
+    if (!g.elements.has(id)) return { nodes: [], edges: [], truncated: false };
+
+    const visited = new Set<string>([id]);
+    const stack = [id];
+    let truncated = false;
+    while (stack.length) {
+      const el = g.elements.get(stack.pop()!);
+      if (!el) continue;
+      for (const dep of el.deps) {
+        if (visited.has(dep.ref)) continue;
+        if (visited.size >= maxNodes) {
+          truncated = true;
+          continue;
+        }
+        visited.add(dep.ref);
+        stack.push(dep.ref);
+      }
+    }
+
+    const nodes: LiteNode[] = [];
+    const edges: LiteEdge[] = [];
+    for (const nid of visited) {
+      const el = g.elements.get(nid);
+      if (!el) continue;
+      nodes.push(this.lite(el));
+      for (const dep of el.deps) {
+        if (visited.has(dep.ref)) edges.push({ source: dep.ref, target: el.id });
+      }
+    }
+    return { nodes, edges, truncated };
   }
 
   private sendDetails(id: string) {

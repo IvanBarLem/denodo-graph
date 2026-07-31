@@ -28,6 +28,10 @@ are highlighted as *missing*.
   as a dashed red node and reported in the **Problems** panel.
 - **Node inspector** — fields (name + type), upstream dependencies, and
   downstream dependents; click any reference to navigate.
+- **Isolate path** — from a selected element, redraw the graph as *only* that
+  element and its whole upstream dependency tree (down to the data sources,
+  across databases). Ideal for tracing one lineage out of a crowded graph;
+  a **Show all** link restores the full view.
 - **Editor integration** — double-click a node (or *Open in editor*) to reveal
   its definition; missing views surface as warnings.
 - **Scales to huge scripts** — a single linear-time parser (~380k lines/s,
