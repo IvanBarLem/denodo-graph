@@ -36,6 +36,8 @@ export interface VqlElement {
   kind: ElementKind;
   /** e.g. JDBC / ODBC / DF / JSON / XML / WS for data sources and wrappers. */
   subtype?: string;
+  /** The database this element belongs to (its CONNECT DATABASE context), if any. */
+  database?: string;
   folder?: string;
   fields: Field[];
   deps: Dependency[];

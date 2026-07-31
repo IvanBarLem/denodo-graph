@@ -1,0 +1,68 @@
+# #############################################
+# Multi-database sample: exercises database boxes,
+# cross-database references, CASE / subselects, and
+# a custom TYPE used by a base view.
+# #############################################
+
+# =========== database: staging ===========
+CREATE DATABASE staging;
+CONNECT DATABASE staging;
+
+CREATE OR REPLACE FOLDER '/sources';
+
+CREATE OR REPLACE TYPE address AS REGISTER OF (street:text, city:text, zip:text);
+
+CREATE DATASOURCE JDBC ds_crm
+    DATABASEURI = 'jdbc:postgresql://crm/db';
+
+CREATE OR REPLACE WRAPPER JDBC customer_w
+    DATASOURCENAME=ds_crm
+    OUTPUTSCHEMA (
+        id = 'ID' :'java.lang.Integer' (OPT),
+        name = 'NAME' :'java.lang.String'
+    );
+
+CREATE OR REPLACE TABLE bv_customer FOLDER = '/sources' (
+    id:int,
+    name:text,
+    home:address
+)
+DATASOURCE JDBC ds_crm
+WRAPPER (JDBC customer_w);
+
+CREATE OR REPLACE TABLE bv_orders FOLDER = '/sources' (
+    order_id:int,
+    customer_id:int,
+    amount:decimal,
+    status:text
+)
+WRAPPER (JDBC orders_w);
+
+# =========== database: dwh ===========
+CREATE DATABASE dwh;
+CONNECT DATABASE dwh;
+
+CREATE OR REPLACE FOLDER '/integration';
+
+# Cross-database references (staging.*), a CASE expression and a subselect.
+CREATE OR REPLACE VIEW v_customer_orders FOLDER = '/integration'
+AS SELECT c.id AS customer_id,
+          c.name AS customer_name,
+          o.order_id AS order_id,
+          o.amount AS amount,
+          CASE WHEN o.status = 'P' THEN 'paid'
+               WHEN o.status = 'C' THEN 'cancelled'
+               ELSE 'open' END AS status_label,
+          (SELECT max(amount) FROM staging.bv_orders) AS max_order
+   FROM staging.bv_customer AS c
+   INNER JOIN staging.bv_orders AS o ON (c.id = o.customer_id)
+   GROUP BY c.id, c.name, o.order_id, o.amount, o.status;
+
+CREATE OR REPLACE INTERFACE VIEW iv_customer_orders (
+    customer_id:int,
+    customer_name:text,
+    order_id:int,
+    amount:decimal
+)
+SET IMPLEMENTATION v_customer_orders
+FOLDER = '/integration';

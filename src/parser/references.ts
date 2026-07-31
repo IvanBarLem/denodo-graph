@@ -128,72 +128,116 @@ const STOP = new Set([
 
 const JOIN_WORDS = new Set(['JOIN', 'INNER', 'LEFT', 'RIGHT', 'FULL', 'CROSS', 'NATURAL', 'OUTER']);
 
-const ALIAS_NOISE = new Set(['AS']);
+// Words that are never a table/view reference. This keeps expression keywords —
+// notably CASE / WHEN / THEN / ELSE / END and the boolean/comparison operators —
+// from being mistaken for a relation when they appear right after FROM/JOIN or
+// where an alias is expected (e.g. an un-aliased subquery followed by WHERE).
+const RESERVED = new Set([
+  'CASE',
+  'WHEN',
+  'THEN',
+  'ELSE',
+  'END',
+  'AND',
+  'OR',
+  'NOT',
+  'IN',
+  'EXISTS',
+  'BETWEEN',
+  'LIKE',
+  'ILIKE',
+  'SIMILAR',
+  'IS',
+  'NULL',
+  'TRUE',
+  'FALSE',
+  'DISTINCT',
+  'ALL',
+  'ANY',
+  'SOME',
+  'SELECT',
+  'AS',
+  'BY',
+  'ASC',
+  'DESC',
+  'FLATTEN'
+]);
 
-function lastSegment(name: string, stripQualifier: boolean): string {
-  if (!stripQualifier) return name;
+/** True if an upper-cased token is a structural/expression keyword, not a name. */
+function isKeyword(u: string): boolean {
+  return JOIN_WORDS.has(u) || STOP.has(u) || RESERVED.has(u) || u === 'FROM' || u === 'JOIN';
+}
+
+/** Strip a database qualifier for a *field* name (fields are always unqualified). */
+function fieldName(name: string): string {
   const idx = name.lastIndexOf('.');
   return idx >= 0 ? name.slice(idx + 1) : name;
 }
 
 /**
  * Parse a full derived-view body (everything after `AS`), returning the set of
- * referenced views and a best-effort list of projected field names.
+ * referenced views (qualified as written, e.g. `db.view` or `view`) and a
+ * best-effort list of projected field names. Handles CASE expressions,
+ * subselects (in FROM and in the projection) and GROUP BY without tripping up.
  */
-export function parseSelectBody(body: string, stripQualifier: boolean): SelectInfo {
+export function parseSelectBody(body: string): SelectInfo {
   const toks = tokenize(body);
   const refs = new Set<string>();
   const fields: { name: string }[] = [];
-  let capturedProjection = false;
 
+  // Projection field names come from the first SELECT's projection list.
   for (let i = 0; i < toks.length; i++) {
-    const t = toks[i];
-
-    // Projection: capture field names from the first top-level SELECT ... FROM.
-    if (!capturedProjection && t.t === 'id' && t.u === 'SELECT') {
-      const proj = collectProjection(toks, i + 1);
-      for (const f of proj.fields) fields.push(f);
-      capturedProjection = true;
-      continue;
-    }
-
-    if (t.t === 'id' && (t.u === 'FROM' || t.u === 'JOIN')) {
-      i = collectTableRefs(toks, i + 1, t.u === 'FROM', refs, stripQualifier) - 1;
+    if (toks[i].t === 'id' && toks[i].u === 'SELECT') {
+      for (const f of collectProjection(toks, i + 1).fields) fields.push(f);
+      break;
     }
   }
+
+  // References: every FROM/JOIN anywhere in the body — including inside
+  // subselects (in FROM, in the projection, or inside a CASE) and GROUP BY is
+  // naturally excluded because GROUP is a stop keyword.
+  scanRefs(toks, 0, toks.length, refs);
 
   return { refs: Array.from(refs), fields };
 }
 
+/** Scan the token range [lo, hi) for FROM/JOIN clauses and collect their refs. */
+function scanRefs(toks: Tok[], lo: number, hi: number, refs: Set<string>): void {
+  let i = lo;
+  while (i < hi) {
+    const t = toks[i];
+    if (t.t === 'id' && (t.u === 'FROM' || t.u === 'JOIN')) {
+      i = collectTableRefs(toks, i + 1, hi, t.u === 'FROM', refs);
+      continue;
+    }
+    i++;
+  }
+}
+
 /**
  * Collect one (JOIN) or a comma list (FROM) of table references starting at
- * index `start`. Returns the index just past what was consumed.
+ * index `start`. Subqueries are recursed into (so their inner FROMs are found)
+ * rather than skipped. Returns the index just past what was consumed.
  */
-function collectTableRefs(
-  toks: Tok[],
-  start: number,
-  isFrom: boolean,
-  refs: Set<string>,
-  stripQualifier: boolean
-): number {
+function collectTableRefs(toks: Tok[], start: number, hi: number, isFrom: boolean, refs: Set<string>): number {
   let i = start;
-  // eslint-disable-next-line no-constant-condition
-  while (i < toks.length) {
+  while (i < hi) {
     const t = toks[i];
     if (!t) break;
 
     if (t.t === 'punct' && t.v === '(') {
-      // subquery / derived table: skip the balanced parens. Inner FROMs are
-      // still discovered because the outer loop keeps scanning tokens after.
-      i = skipParens(toks, i);
-      // optional alias after subquery
+      // Derived table / subselect: recurse so references inside it are captured,
+      // then continue after the closing paren and its optional alias.
+      const close = skipParens(toks, i); // index just past matching ')'
+      scanRefs(toks, i + 1, close - 1, refs);
+      i = close;
       i = skipAlias(toks, i);
-    } else if (t.t === 'id' && !JOIN_WORDS.has(t.u) && !STOP.has(t.u)) {
-      refs.add(lastSegment(t.v, stripQualifier));
+    } else if (t.t === 'id' && !isKeyword(t.u)) {
+      refs.add(t.v); // keep the qualifier as written; resolved against the db later
       i++;
       i = skipAlias(toks, i);
     } else {
-      // hit a JOIN / stop keyword / unexpected token -> end of this segment
+      // hit a JOIN / stop / expression keyword / unexpected token -> segment end
       break;
     }
 
@@ -207,20 +251,10 @@ function collectTableRefs(
   return i;
 }
 
-/** Advance past `AS`, an alias identifier, and any `flatten`-style noise. */
+/** Advance past `AS` and an alias identifier (never a keyword). */
 function skipAlias(toks: Tok[], i: number): number {
-  if (toks[i] && toks[i].t === 'id' && ALIAS_NOISE.has(toks[i].u)) i++;
-  // an alias is an identifier that is not a structural keyword
-  if (
-    toks[i] &&
-    toks[i].t === 'id' &&
-    !JOIN_WORDS.has(toks[i].u) &&
-    !STOP.has(toks[i].u) &&
-    toks[i].u !== 'FROM' &&
-    toks[i].u !== 'JOIN'
-  ) {
-    i++;
-  }
+  if (toks[i] && toks[i].t === 'id' && toks[i].u === 'AS') i++;
+  if (toks[i] && toks[i].t === 'id' && !isKeyword(toks[i].u)) i++;
   return i;
 }
 
@@ -282,14 +316,14 @@ function fieldNameFromItem(item: Tok[]): string | null {
     if (t.t === 'punct' && t.v === '(') depth++;
     else if (t.t === 'punct' && t.v === ')') depth--;
     if (depth === 0 && t.t === 'id' && t.u === 'AS' && item[k + 1] && item[k + 1].t === 'id') {
-      return lastSegment(item[k + 1].v, true);
+      return fieldName(item[k + 1].v);
     }
   }
   // No alias: if it is a simple `a.b.c` or `*`, use the last identifier / '*'.
   // Only trust "simple" projections (single identifier token, maybe with '*').
   const ids = item.filter((t) => t.t === 'id');
   if (item.length === 1 && item[0].t === 'id') {
-    return lastSegment(item[0].v, true);
+    return fieldName(item[0].v);
   }
   if (item.length === 1 && item[0].t === 'op' && item[0].v === '*') {
     return '*';

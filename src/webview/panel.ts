@@ -23,6 +23,7 @@ interface LiteNode {
   defined: boolean;
   folder?: string;
   subtype?: string;
+  database?: string;
 }
 interface LiteEdge {
   source: string;
@@ -89,9 +90,7 @@ export class GraphPanel {
     // single linear pass and typically fast. We yield first so the webview can
     // load and paint its initial state.
     setTimeout(() => {
-      const graph = buildGraph(text, {
-        stripDatabaseQualifier: cfg.get<boolean>('stripDatabaseQualifier', true)
-      });
+      const graph = buildGraph(text);
       this.graph = graph;
 
       if (cfg.get<boolean>('reportMissingViews', true)) {
@@ -171,7 +170,8 @@ export class GraphPanel {
       kind: el.kind,
       defined: el.defined,
       folder: el.folder,
-      subtype: el.subtype
+      subtype: el.subtype,
+      database: el.database
     };
   }
 
@@ -260,6 +260,7 @@ export class GraphPanel {
       kind: el.kind,
       kindLabel: KIND_LABEL[el.kind],
       subtype: el.subtype,
+      database: el.database,
       folder: el.folder,
       defined: el.defined,
       line: el.line,
@@ -367,8 +368,9 @@ export class GraphPanel {
 
     // Assemble in valid import order:
     //   1. database context  2. folders (parents first)  3. types  4. elements
+    const targetDb = g.elements.get(id)?.database ?? g.database;
     let header = `# VQL for "${id}" and its upstream dependencies\n`;
-    if (!g.database) {
+    if (!targetDb) {
       header += `# WARNING: no CONNECT DATABASE found in the source; add one before importing.\n`;
     }
     if (missing.size) {
@@ -376,7 +378,7 @@ export class GraphPanel {
     }
 
     const parts: string[] = [];
-    if (g.database) parts.push(`CONNECT DATABASE ${g.database};`);
+    if (targetDb) parts.push(`CONNECT DATABASE ${targetDb};`);
     for (const f of folderStatements) parts.push(f);
     for (const t of typeStatements) parts.push(t);
     for (const el of order) parts.push(stmt(src, el));

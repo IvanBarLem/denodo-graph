@@ -87,11 +87,6 @@
           "type": "boolean",
           "default": true,
           "description": "Report references to undefined elements (missing views) as warnings in the Problems panel."
-        },
-        "denodoVqlGraph.stripDatabaseQualifier": {
-          "type": "boolean",
-          "default": true,
-          "description": "Treat 'database.view' references as just 'view' when resolving dependencies."
         }
       }
     }

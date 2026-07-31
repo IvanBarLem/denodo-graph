@@ -56,7 +56,14 @@ from the command palette, the editor title bar, or the right-click menu.
 | `denodoVqlGraph.maxRenderNodes` | `2500` | Above this, open in focus mode instead of drawing the whole graph. |
 | `denodoVqlGraph.neighbourhoodDepth` | `2` | Dependency hops expanded around a focused node. |
 | `denodoVqlGraph.reportMissingViews` | `true` | Report undefined references in the Problems panel. |
-| `denodoVqlGraph.stripDatabaseQualifier` | `true` | Treat `database.view` as `view` when resolving references. |
+
+### Databases
+
+Elements are grouped into **database boxes**. Each element belongs to the
+database of the active `CONNECT DATABASE` when it was defined; unqualified
+references bind to that same database, while `db.view` references bind across
+databases. In the hierarchy layout each database gets its own vertical band, so
+the boxes sit side by side with their layers aligned.
 
 ## Architecture
 
@@ -92,8 +99,11 @@ media/
 - Derived-view **field names** come from the `SELECT` projection: aliases
   (`… AS x`) and simple columns are captured; complex un-aliased expressions and
   `SELECT *` are not expanded.
-- Dependencies are resolved by name; `database.view` qualifiers are stripped by
-  default (configurable).
+- `CASE … WHEN … THEN … END`, subselects (in `FROM`, in the projection, or
+  inside a `CASE`) and `GROUP BY` are parsed correctly — expression keywords are
+  never mistaken for tables, and references inside subselects are still
+  discovered as dependencies.
+- Dependencies are resolved by name against each element's database context.
 
 ## Tests & benchmark
 

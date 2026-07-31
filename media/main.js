@@ -118,6 +118,34 @@
         }
       }
     ];
+    // Database box (compound parent): a labelled container behind its elements.
+    style.push({
+      selector: 'node.dbbox',
+      style: {
+        shape: 'round-rectangle',
+        'background-color': getCssVar('--vscode-foreground', '#888'),
+        'background-opacity': 0.05,
+        'background-image': 'none',
+        'border-width': 1.5,
+        'border-color': getCssVar('--vscode-foreground', '#888'),
+        'border-opacity': 0.4,
+        'border-style': 'solid',
+        label: 'data(label)',
+        'font-size': 15,
+        'font-weight': 'bold',
+        color: FG,
+        'text-valign': 'top',
+        'text-halign': 'center',
+        'text-margin-y': 6,
+        'text-outline-width': 3,
+        'text-outline-color': BG,
+        padding: 26,
+        'z-index': 0,
+        'z-compound-depth': 'bottom',
+        'min-width': 40,
+        'min-height': 40
+      }
+    });
     for (const k of Object.keys(KIND_COLOR)) {
       style.push({
         selector: 'node[kind="' + k + '"]',
@@ -221,18 +249,36 @@
     });
   }
 
+  function dbBoxId(db) {
+    return '__db__' + db;
+  }
+
   function elements(nodes, edges) {
     const out = [];
-    for (const n of nodes) {
-      // Minimal per-node data; colour + icon come from the stylesheet by kind.
+    // A compound "box" node per database, so elements between CONNECT DATABASE
+    // (or reached via a db.qualified name) are visually grouped.
+    const dbs = new Set();
+    for (const n of nodes) if (n.database) dbs.add(n.database);
+    for (const db of dbs) {
       out.push({
         group: 'nodes',
-        data: { id: n.id, label: n.label, kind: n.kind },
-        classes: n.defined ? '' : 'missing'
+        data: { id: dbBoxId(db), label: db, isDb: true },
+        classes: 'dbbox',
+        selectable: false,
+        grabbable: false
       });
     }
+    for (const n of nodes) {
+      // Minimal per-node data; colour + icon come from the stylesheet by kind.
+      const data = { id: n.id, label: n.label, kind: n.kind };
+      if (n.database) {
+        data.db = n.database;
+        data.parent = dbBoxId(n.database);
+      }
+      out.push({ group: 'nodes', data: data, classes: n.defined ? '' : 'missing' });
+    }
     for (const e of edges) {
-      out.push({ group: 'edges', data: { id: e.source + ' ' + e.target, source: e.source, target: e.target } });
+      out.push({ group: 'edges', data: { id: e.source + ' ' + e.target, source: e.source, target: e.target } });
     }
     return out;
   }
@@ -263,10 +309,11 @@
     for (const n of nodes) {
       if (!existing.has(n.id)) toAdd.push(n);
     }
-    const addEls = elements(toAdd, []);
+    // elements() also emits db-box parents; drop any node already present.
+    const addEls = elements(toAdd, []).filter((e) => e.group === 'edges' || cy.getElementById(e.data.id).empty());
     for (const e of edges) {
       if (ids.has(e.source) && ids.has(e.target)) {
-        const eid = e.source + ' ' + e.target;
+        const eid = e.source + ' ' + e.target;
         if (cy.getElementById(eid).empty()) {
           addEls.push({ group: 'edges', data: { id: eid, source: e.source, target: e.target } });
         }
@@ -319,13 +366,15 @@
     unknown: 3
   };
 
-  function computeLevels(cy) {
+  // Level per node (leaves only; db-box parents are excluded and auto-sized).
+  function computeLevels(leaves) {
+    const cy = state.cy;
     const memo = new Map();
     const visiting = new Set();
     function lvl(id) {
       if (memo.has(id)) return memo.get(id);
       const node = cy.getElementById(id);
-      if (node.empty()) return 0;
+      if (node.empty() || node.hasClass('dbbox')) return 0;
       const base = KIND_BASE_LEVEL[node.data('kind')];
       const b = base == null ? 3 : base;
       if (visiting.has(id)) return b; // cycle guard (VQL deps are a DAG, but be safe)
@@ -340,66 +389,96 @@
       memo.set(id, m);
       return m;
     }
-    cy.nodes().forEach((n) => lvl(n.id()));
+    leaves.forEach((n) => lvl(n.id()));
     return memo;
   }
 
+  const NO_DB = ' none';
+
+  // Layered "bottom-to-top" hierarchy, split into a horizontal band per
+  // database so the database boxes sit side by side and never overlap. Levels
+  // (y) are shared across bands so data sources line up along the bottom.
   function runHierarchy() {
     const cy = state.cy;
-    const level = computeLevels(cy);
-    const byLevel = new Map();
+    const leaves = cy.nodes().not('.dbbox');
+    const level = computeLevels(leaves);
+
     let maxLevel = 0;
-    cy.nodes().forEach((n) => {
+    leaves.forEach((n) => {
       const l = level.get(n.id()) || 0;
       if (l > maxLevel) maxLevel = l;
-      if (!byLevel.has(l)) byLevel.set(l, []);
-      byLevel.get(l).push(n);
     });
+
+    // Group nodes by database, then by level within each database.
+    const bands = new Map(); // db -> Map(level -> node[])
+    const dbOrder = [];
+    leaves.forEach((n) => {
+      const db = n.data('db') || NO_DB;
+      if (!bands.has(db)) {
+        bands.set(db, new Map());
+        dbOrder.push(db);
+      }
+      const lv = level.get(n.id()) || 0;
+      const m = bands.get(db);
+      if (!m.has(lv)) m.set(lv, []);
+      m.get(lv).push(n);
+    });
+    dbOrder.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 
     const rowH = 150;
     const colW = 185;
+    const bandGap = colW * 1.4;
     const positions = {};
-    const placedX = new Map();
-    const levels = Array.from(byLevel.keys()).sort((a, b) => a - b);
+    let bandStart = 0;
 
-    for (const l of levels) {
-      const arr = byLevel.get(l);
-      // Order each layer by the average x of its already-placed lower neighbours
-      // (barycenter heuristic) to reduce edge crossings.
-      arr.forEach((n) => {
-        let sum = 0;
-        let cnt = 0;
-        n.incomers('node').forEach((p) => {
-          if (placedX.has(p.id())) {
-            sum += placedX.get(p.id());
-            cnt++;
-          }
+    for (const db of dbOrder) {
+      const m = bands.get(db);
+      let widest = 1;
+      for (const arr of m.values()) widest = Math.max(widest, arr.length);
+      const bandWidth = (widest - 1) * colW;
+      const placedX = new Map();
+      const levels = Array.from(m.keys()).sort((a, b) => a - b);
+
+      for (const lv of levels) {
+        const arr = m.get(lv);
+        // Barycenter ordering within the band (based on already-placed lower rows).
+        arr.forEach((n) => {
+          let sum = 0;
+          let cnt = 0;
+          n.incomers('node').forEach((p) => {
+            if (placedX.has(p.id())) {
+              sum += placedX.get(p.id());
+              cnt++;
+            }
+          });
+          n.scratch('_bary', cnt ? sum / cnt : null);
         });
-        n.scratch('_bary', cnt ? sum / cnt : null);
-      });
-      arr.sort((a, b) => {
-        const ba = a.scratch('_bary');
-        const bb = b.scratch('_bary');
-        if (ba == null && bb == null) return a.data('label') < b.data('label') ? -1 : 1;
-        if (ba == null) return 1;
-        if (bb == null) return -1;
-        return ba - bb || (a.data('label') < b.data('label') ? -1 : 1);
-      });
+        arr.sort((a, b) => {
+          const ba = a.scratch('_bary');
+          const bb = b.scratch('_bary');
+          if (ba == null && bb == null) return a.data('label') < b.data('label') ? -1 : 1;
+          if (ba == null) return 1;
+          if (bb == null) return -1;
+          return ba - bb || (a.data('label') < b.data('label') ? -1 : 1);
+        });
 
-      const offset = -((arr.length - 1) * colW) / 2;
-      arr.forEach((n, i) => {
-        const x = offset + i * colW;
-        // level 0 (data sources) gets the largest y => rendered at the bottom.
-        positions[n.id()] = { x: x, y: (maxLevel - l) * rowH };
-        placedX.set(n.id(), x);
-      });
+        const rowStart = bandStart + (bandWidth - (arr.length - 1) * colW) / 2;
+        arr.forEach((n, i) => {
+          const x = rowStart + i * colW;
+          // level 0 (data sources) gets the largest y => rendered at the bottom.
+          positions[n.id()] = { x: x, y: (maxLevel - lv) * rowH };
+          placedX.set(n.id(), x);
+        });
+      }
+      bandStart += bandWidth + bandGap;
     }
 
     cy.layout({
       name: 'preset',
+      // db-box parents get no explicit position; cytoscape sizes them to fit.
       positions: (n) => positions[n.id()],
       fit: true,
-      padding: 45,
+      padding: 55,
       animate: false
     }).run();
   }
@@ -417,7 +496,8 @@
       // sources: predecessors() follows incoming edges (dep -> node) transitively.
       const ancestors = node.predecessors(); // nodes + edges along all upstream paths
       const path = ancestors.union(node);
-      cy.elements().addClass('dim');
+      // Dim everything except the path — but never the database boxes.
+      cy.elements().not('.dbbox').addClass('dim');
       path.removeClass('dim');
       path.nodes().addClass('highlight');
       path.edges().addClass('hl');
@@ -514,6 +594,7 @@
     const cy = state.cy;
     cy.batch(() => {
       cy.nodes().forEach((n) => {
+        if (n.hasClass('dbbox')) return; // boxes follow their children automatically
         const kindOn = state.activeKinds.has(n.data('kind'));
         const missingOk = !n.hasClass('missing') || state.showMissing;
         n.style('display', kindOn && missingOk ? 'element' : 'none');
@@ -550,6 +631,7 @@
       '</span>';
     html += '<div class="sb-name">' + escapeHtml(d.name) + '</div>';
     const meta = [];
+    if (d.database) meta.push('🗄 ' + escapeHtml(d.database));
     if (d.folder) meta.push('📁 ' + escapeHtml(d.folder));
     if (d.defined) meta.push('line ' + d.line);
     html += '<div class="sb-meta">' + (meta.join(' &nbsp;·&nbsp; ') || '&nbsp;') + '</div>';
@@ -705,9 +787,10 @@
   // ---------------- status / banner ----------------
 
   function updateStatusCounts() {
-    const n = state.cy.nodes(':visible').length;
+    const n = state.cy.nodes(':visible').not('.dbbox').length;
     const e = state.cy.edges(':visible').length;
-    setStatus('Showing ' + n + ' nodes · ' + e + ' edges');
+    const dbs = state.cy.nodes('.dbbox').length;
+    setStatus('Showing ' + n + ' nodes · ' + e + ' edges' + (dbs ? ' · ' + dbs + ' database' + (dbs === 1 ? '' : 's') : ''));
   }
   function setStatus(text) {
     el.status.textContent = text;

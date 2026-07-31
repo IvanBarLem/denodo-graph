@@ -10,10 +10,6 @@
 import { Dependency, ElementKind, Field, VqlElement } from './model';
 import { parseSelectBody } from './references';
 
-export interface ParseOptions {
-  stripDatabaseQualifier: boolean;
-}
-
 const RE_DATASOURCE =
   /^\s*CREATE\s+(?:OR\s+REPLACE\s+)?DATASOURCE\s+([A-Za-z0-9_]+)\s+("(?:[^"]|"")+"|[A-Za-z0-9_./]+)/i;
 const RE_WRAPPER =
@@ -44,12 +40,6 @@ function unquote(raw: string): string {
     return raw.slice(1, -1).replace(/""/g, '"');
   }
   return raw;
-}
-
-function stripQualifier(name: string, opts: ParseOptions): string {
-  if (!opts.stripDatabaseQualifier) return name;
-  const idx = name.lastIndexOf('.');
-  return idx >= 0 ? name.slice(idx + 1) : name;
 }
 
 function folderOf(body: string): string | undefined {
@@ -189,12 +179,7 @@ function parseWrapperFields(body: string): Field[] {
  * @param line   1-based line of the statement start
  * @param offset 0-based source offset of the statement start
  */
-export function classifyStatement(
-  body: string,
-  line: number,
-  offset: number,
-  opts: ParseOptions
-): VqlElement | null {
+export function classifyStatement(body: string, line: number, offset: number): VqlElement | null {
   // Fast reject: must start (after leading ws/comments already stripped) with CREATE.
   // A quick check avoids running six regexes on non-CREATE statements.
   const head = body.slice(0, 64).toUpperCase();
@@ -208,7 +193,7 @@ export function classifyStatement(
     const name = unquote(m[1]);
     const deps: Dependency[] = [];
     const impl = RE_IMPLEMENTATION.exec(body);
-    if (impl) deps.push({ ref: stripQualifier(unquote(impl[1]), opts), expect: 'view' });
+    if (impl) deps.push({ ref: unquote(impl[1]), expect: 'view' });
     const paren = firstParenGroup(body, m.index + m[0].length - m[1].length);
     const fields = paren ? parseFieldList(paren.content) : [];
     return base('interface', name, { deps, fields, folder: folderOf(body), line, offset });
@@ -225,7 +210,7 @@ export function classifyStatement(
     const name = unquote(m[2]);
     const deps: Dependency[] = [];
     const ds = RE_DATASOURCENAME.exec(body);
-    if (ds) deps.push({ ref: stripQualifier(unquote(ds[1]), opts), expect: 'datasource' });
+    if (ds) deps.push({ ref: unquote(ds[1]), expect: 'datasource' });
     const fields = parseWrapperFields(body);
     return base('wrapper', name, { subtype, deps, fields, folder: folderOf(body), line, offset });
   }
@@ -234,7 +219,7 @@ export function classifyStatement(
     const name = unquote(m[1]);
     const deps: Dependency[] = [];
     const wref = RE_WRAPPER_REF.exec(body);
-    if (wref) deps.push({ ref: stripQualifier(unquote(wref[2]), opts), expect: 'wrapper' });
+    if (wref) deps.push({ ref: unquote(wref[2]), expect: 'wrapper' });
     const dref = RE_DATASOURCE_REF.exec(body);
     // Fields: first paren group after the table name.
     const nameEnd = m.index + m[0].length;
@@ -251,7 +236,7 @@ export function classifyStatement(
     RE_ENDPOINT.lastIndex = 0;
     const seen = new Set<string>();
     while ((e = RE_ENDPOINT.exec(body))) {
-      const v = stripQualifier(unquote(e[1]), opts);
+      const v = unquote(e[1]);
       if (!seen.has(v)) {
         seen.add(v);
         deps.push({ ref: v, expect: 'view' });
@@ -262,9 +247,9 @@ export function classifyStatement(
 
   if ((m = RE_VIEW.exec(body))) {
     const name = unquote(m[1]);
-    const info = parseSelectBody(body, opts.stripDatabaseQualifier);
+    const info = parseSelectBody(body);
     const deps: Dependency[] = info.refs
-      .filter((r) => r && r.toLowerCase() !== name.toLowerCase())
+      .filter((r) => !!r)
       .map((r) => ({ ref: r, expect: 'view' as ElementKind }));
     const fields: Field[] = info.fields.filter((f) => f.name && f.name !== '*');
     return base('view', name, { deps, fields, folder: folderOf(body), line, offset });

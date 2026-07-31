@@ -9,25 +9,39 @@
 
 import { ElementKind, emptyStats, TypeDef, VqlElement, VqlGraph } from '../parser/model';
 import { buildLineIndex, offsetToLine, splitStatements, stripComments } from '../parser/scanner';
-import {
-  classifyStatement,
-  matchDatabase,
-  matchFolderPath,
-  matchTypeName,
-  ParseOptions
-} from '../parser/vqlParser';
+import { classifyStatement, matchDatabase, matchFolderPath, matchTypeName } from '../parser/vqlParser';
 
-export interface BuildOptions extends ParseOptions {
+export interface BuildOptions {
   /** Optional progress callback (0..1) for very large inputs. */
   onProgress?: (fraction: number) => void;
 }
 
-export function buildGraph(src: string, opts: BuildOptions): VqlGraph {
+/**
+ * Resolve a raw reference against the referencing element's database context.
+ * `db.name` is honoured as written; an unqualified `name` binds to the owner's
+ * database. The returned id is globally unique across databases.
+ */
+function resolveRef(rawRef: string, ownerDb: string | undefined): { id: string; db?: string; name: string } {
+  const dot = rawRef.indexOf('.');
+  let db: string | undefined;
+  let name: string;
+  if (dot >= 0) {
+    db = rawRef.slice(0, dot);
+    name = rawRef.slice(dot + 1);
+  } else {
+    db = ownerDb;
+    name = rawRef;
+  }
+  return { id: db ? `${db}.${name}` : name, db, name };
+}
+
+export function buildGraph(src: string, opts: BuildOptions = {}): VqlGraph {
   const started = Date.now();
   const elements = new Map<string, VqlElement>();
   const types = new Map<string, TypeDef>();
   const folders = new Map<string, TypeDef>();
-  let database: string | undefined;
+  let database: string | undefined; // first database seen (for a sensible default)
+  let currentDb: string | undefined; // the active CONNECT DATABASE context
   const lineStarts = buildLineIndex(src);
 
   const statements = splitStatements(src);
@@ -45,9 +59,20 @@ export function buildGraph(src: string, opts: BuildOptions): VqlGraph {
 
     const stmtEnd = raw.start + raw.text.length;
 
-    const el = classifyStatement(body, line, defOffset, opts);
+    const el = classifyStatement(body, line, defOffset);
     if (el) {
       el.end = stmtEnd;
+      el.database = currentDb;
+      el.id = currentDb ? `${currentDb}.${el.name}` : el.name;
+      // Resolve dependency references against this element's database context.
+      const resolved = [];
+      for (const dep of el.deps) {
+        const r = resolveRef(dep.ref, currentDb);
+        if (r.id === el.id) continue; // drop self references
+        resolved.push({ ref: r.id, expect: dep.expect });
+      }
+      el.deps = resolved;
+
       const existing = elements.get(el.id);
       if (!existing || !existing.defined) {
         // New element, or upgrading a previously-missing placeholder.
@@ -66,9 +91,12 @@ export function buildGraph(src: string, opts: BuildOptions): VqlGraph {
           if (!folders.has(folder)) folders.set(folder, { name: folder, offset: defOffset, end: stmtEnd });
         } else {
           const db = matchDatabase(body);
-          // CONNECT DATABASE is the working context and wins; CREATE DATABASE is
-          // only a fallback when no CONNECT was seen.
-          if (db && (db.connect || database === undefined)) database = db.name;
+          if (db) {
+            // CONNECT DATABASE switches the active context; CREATE DATABASE only
+            // seeds the default when no CONNECT has been seen.
+            if (db.connect) currentDb = db.name;
+            if (database === undefined) database = db.name;
+          }
         }
       }
     }
@@ -119,10 +147,16 @@ export function buildGraph(src: string, opts: BuildOptions): VqlGraph {
 }
 
 function makeMissing(id: string, expect: ElementKind, line: number, offset: number): VqlElement {
+  // Recover the database qualifier (if any) so the missing node lands in the
+  // right database box and shows an unqualified display name.
+  const dot = id.indexOf('.');
+  const db = dot >= 0 ? id.slice(0, dot) : undefined;
+  const name = dot >= 0 ? id.slice(dot + 1) : id;
   return {
     id,
-    name: id,
+    name,
     kind: expect,
+    database: db,
     fields: [],
     deps: [],
     line,
