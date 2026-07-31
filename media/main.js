@@ -143,7 +143,10 @@
         'z-index': 0,
         'z-compound-depth': 'bottom',
         'min-width': 40,
-        'min-height': 40
+        'min-height': 40,
+        // Make the box purely decorative: pointer events pass through to the
+        // canvas so clicking/dragging over it pans instead of grabbing the box.
+        events: 'no'
       }
     });
     for (const k of Object.keys(KIND_COLOR)) {

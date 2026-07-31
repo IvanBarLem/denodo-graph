@@ -2,6 +2,21 @@
 # Sample Denodo VQL for the graph extension
 # #############################################
 
+CREATE DATABASE sales2;
+CONNECT DATABASE sales2;
+
+# ---- Association between two base views ----
+CREATE OR REPLACE ASSOCIATION assoc_customer_orders REFERENTIAL CONSTRAINT
+    FOLDER = '/02 - integration'
+    ENDPOINT customer sales.bv_customer PRINCIPAL (1,1)
+    ENDPOINT orders sales.bv_orders (0,*)
+    MAPPING ON (sales.bv_customer.id = sales.bv_orders.customer_id);
+
+# ---- A type (must be IGNORED by the graph) ----
+CREATE OR REPLACE TYPE my_record AS REGISTER OF (a:int, b:text);
+
+CLOSE;
+
 CREATE DATABASE sales;
 CONNECT DATABASE sales;
 
