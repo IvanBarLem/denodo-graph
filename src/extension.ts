@@ -8,8 +8,11 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(diagnostics);
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('denodoVqlGraph.openGraph', async () => {
-      const uri = await resolveVqlUri();
+    vscode.commands.registerCommand('denodoVqlGraph.openGraph', async (resource?: vscode.Uri) => {
+      // When invoked from the editor title bar or context menu, VS Code passes
+      // the resource URI directly — use it (this also works for files above the
+      // 50 MB editor limit, where there is no active text editor to fall back on).
+      const uri = resource instanceof vscode.Uri ? resource : await resolveVqlUri();
       if (!uri) {
         vscode.window.showWarningMessage('Denodo VQL Graph: open a .vql file (or a file with VQL) first.');
         return;

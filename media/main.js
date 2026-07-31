@@ -62,8 +62,15 @@
     activeKinds: new Set(Object.keys(KIND_COLOR)),
     showMissing: true,
     cy: null,
-    selected: null
+    selected: null,
+    colors: null, // { FG, BG, EDGE } captured at init, for stylesheet rebuilds
+    fast: false // whether the fast (large-graph) stylesheet is currently active
   };
+
+  // Above this many rendered nodes, switch to a cheaper stylesheet: straight
+  // edges instead of beziers and no per-label outline pass. Both are major
+  // Cytoscape canvas-render costs at scale.
+  const FAST_RENDER_ABOVE = 500;
 
   const el = {
     cy: document.getElementById('cy'),
@@ -87,7 +94,11 @@
 
   // Build the stylesheet. Colours and icons are attached per-kind via selectors
   // (stored once), NOT per node, so node data stays minimal: {id, label, kind}.
-  function buildStyle(FG, BG, EDGE) {
+  function buildStyle(FG, BG, EDGE, fast) {
+    // In fast mode, labels lose their outline (a second stroke pass per label)
+    // and edges are drawn as straight segments instead of beziers.
+    const nodeOutline = fast ? 0 : 3;
+    const edgeCurve = fast ? 'straight' : 'bezier';
     const style = [
       {
         selector: 'node',
@@ -112,8 +123,13 @@
           'text-margin-y': 5,
           'text-wrap': 'ellipsis',
           'text-max-width': 150,
-          'text-outline-width': 3,
+          'text-outline-width': nodeOutline,
           'text-outline-color': BG,
+          // Skip drawing labels once they'd be smaller than this many px on
+          // screen. When a large graph is fit to the viewport every label is
+          // tiny, and rasterizing thousands of outlined labels is the single
+          // biggest render cost — this culls them until the user zooms in.
+          'min-zoomed-font-size': 7,
           'z-index': 1
         }
       }
@@ -139,6 +155,7 @@
         'text-margin-y': 6,
         'text-outline-width': 3,
         'text-outline-color': BG,
+        'min-zoomed-font-size': 6,
         padding: 26,
         'z-index': 0,
         'z-compound-depth': 'bottom',
@@ -200,7 +217,7 @@
         'target-arrow-color': EDGE,
         'target-arrow-shape': 'triangle',
         'arrow-scale': 0.7,
-        'curve-style': 'bezier',
+        'curve-style': edgeCurve,
         opacity: 0.55
       }
     });
@@ -218,6 +235,7 @@
     const FG = getCssVar('--vscode-foreground', '#cccccc');
     const BG = getCssVar('--vscode-editor-background', '#1e1e1e');
     const EDGE = getCssVar('--vscode-panel-border', '#666666');
+    state.colors = { FG, BG, EDGE };
     state.cy = cytoscape({
       container: el.cy,
       wheelSensitivity: 0.2,
@@ -227,7 +245,7 @@
       motionBlur: false,
       maxZoom: 3,
       minZoom: 0.02,
-      style: buildStyle(FG, BG, EDGE)
+      style: buildStyle(FG, BG, EDGE, false)
     });
 
     // Cytoscape has no native double-tap event, so detect it manually.
@@ -286,6 +304,21 @@
     return out;
   }
 
+  // Swap between the normal and fast (large-graph) stylesheets based on how many
+  // nodes are on screen. Rebuilding the shared stylesheet is O(1) in element
+  // count (styles are stored once, not per node), so this is cheap; we only do
+  // it when the mode actually flips to avoid needless re-renders.
+  function applyRenderScale() {
+    const cy = state.cy;
+    const wantFast = cy.nodes().length > FAST_RENDER_ABOVE;
+    if (wantFast === state.fast || !state.colors) return;
+    const styler = cy.style && cy.style();
+    if (!styler || !styler.fromJson) return; // no renderer style (e.g. headless)
+    state.fast = wantFast;
+    const c = state.colors;
+    styler.fromJson(buildStyle(c.FG, c.BG, c.EDGE, wantFast)).update();
+  }
+
   function render(nodes, edges, doLayout) {
     const cy = state.cy;
     cy.startBatch();
@@ -295,6 +328,7 @@
     const safeEdges = edges.filter((e) => ids.has(e.source) && ids.has(e.target));
     cy.add(elements(nodes, safeEdges));
     cy.endBatch();
+    applyRenderScale();
     applyKindFilter();
     if (doLayout !== false) runLayout();
     updateStatusCounts();
@@ -324,6 +358,7 @@
     }
     cy.add(addEls);
     cy.endBatch();
+    applyRenderScale();
     applyKindFilter();
     runLayout();
     updateStatusCounts();

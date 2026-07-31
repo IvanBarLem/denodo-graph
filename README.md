@@ -97,6 +97,12 @@ media/
 - The heavy payload (fields, dependency lists) is sent to the webview **lazily**
   on node selection; the initial payload is just `{id, label, kind, defined}`.
 - Above the node threshold the UI never tries to lay out the whole graph.
+- **Rendering scales too, not just parsing.** The parser handles ~12k elements
+  in well under a second; the cost at scale is the canvas renderer. So above a
+  few hundred on-screen nodes the graph automatically switches to a cheaper
+  stylesheet — **straight edges** instead of beziers and no per-label outline —
+  and labels stop being drawn once they'd be too small to read
+  (`min-zoomed-font-size`), which is what keeps a fitted large graph responsive.
 
 ### Parser limitations (best-effort areas)
 
