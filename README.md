@@ -34,6 +34,10 @@ are highlighted as *missing*.
   ~15 MB/s in benchmarks). Above `maxRenderNodes` the graph opens in **focus
   mode**: search an element and expand its neighbourhood instead of drawing
   everything at once.
+- **Works past the 50 MB editor limit** — VS Code refuses to *sync* files above
+  50 MB to extensions, but the graph reads the VQL **directly from disk**, so it
+  parses arbitrarily large scripts. (For such files the editor itself can't open
+  the text, so *Open in editor* reports the element's line instead of jumping.)
 - **UI/UX** — theme-aware, VS Code-native styling, type filters, a legend,
   multiple layouts (Hierarchy / Force / Concentric / Grid), search, and a
   details sidebar.

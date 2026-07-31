@@ -815,6 +815,14 @@
       case 'status':
         setStatus(msg.text);
         break;
+      case 'error': {
+        const safe = String(msg.message || 'Could not load file.').replace(/[<>&]/g, (c) =>
+          c === '<' ? '&lt;' : c === '>' ? '&gt;' : '&amp;'
+        );
+        showBanner('<b>Error:</b> ' + safe);
+        setStatus('Error');
+        break;
+      }
       case 'init':
         state.mode = msg.mode;
         state.depth = msg.neighbourhoodDepth || 2;

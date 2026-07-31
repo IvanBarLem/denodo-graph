@@ -22,7 +22,8 @@ test('extracts each defined element kind and ignores CREATE TYPE', () => {
   assert.equal(definedByKind('baseView'), 2, 'base views');
   assert.equal(definedByKind('view'), 2, 'derived views');
   assert.equal(definedByKind('interface'), 1, 'interface');
-  assert.equal(definedByKind('association'), 1, 'association');
+  // Two associations: sales.assoc_customer_orders and sales2.assoc_customer_orders.
+  assert.equal(definedByKind('association'), 2, 'associations');
   assert.ok(!g.elements.has(q('my_record')), 'CREATE TYPE ignored');
   // byKind (all nodes) includes missing placeholders: orders_w wrapper + bv_regions view.
   assert.equal(g.stats.byKind.wrapper, 2, 'wrapper nodes incl. missing');
@@ -82,7 +83,13 @@ test('association references both endpoints', () => {
 
 test('dependents (used-by) reverse index', () => {
   const usedBy = g.dependents.get(q('bv_customer'))!.sort();
-  assert.deepEqual(usedBy, [q('assoc_customer_orders'), q('v_customer_orders')]);
+  // sales.bv_customer is used by the sales association + derived view, and also
+  // by the cross-database association defined in sales2.
+  assert.deepEqual(usedBy, [
+    q('assoc_customer_orders'),
+    q('v_customer_orders'),
+    'sales2.assoc_customer_orders'
+  ]);
 });
 
 test('captures CREATE TYPE separately and records source spans', () => {
@@ -94,7 +101,8 @@ test('captures CREATE TYPE separately and records source spans', () => {
 });
 
 test('captures the database context for importable copies', () => {
-  assert.equal(g.database, 'sales');
+  // g.database is the first-seen database; the sample opens with sales2.
+  assert.equal(g.database, 'sales2');
 });
 
 test('semicolons inside string literals do not split statements', () => {

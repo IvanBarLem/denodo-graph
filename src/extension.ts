@@ -9,12 +9,12 @@ export function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand('denodoVqlGraph.openGraph', async () => {
-      const doc = await resolveVqlDocument();
-      if (!doc) {
+      const uri = await resolveVqlUri();
+      if (!uri) {
         vscode.window.showWarningMessage('Denodo VQL Graph: open a .vql file (or a file with VQL) first.');
         return;
       }
-      GraphPanel.show(context, doc, diagnostics);
+      GraphPanel.show(context, uri, diagnostics);
     })
   );
 
@@ -32,12 +32,14 @@ export function deactivate() {
 }
 
 /**
- * Pick the document to graph: the active editor if it looks like VQL, otherwise
- * let the user choose a file.
+ * Pick the file to graph: the active editor if it looks like VQL, otherwise let
+ * the user choose a file. Returns a URI (not a TextDocument) so the panel can
+ * read the bytes from disk — files above VS Code's 50 MB editor-sync limit have
+ * no usable document but can still be read and graphed.
  */
-async function resolveVqlDocument(): Promise<vscode.TextDocument | undefined> {
+async function resolveVqlUri(): Promise<vscode.Uri | undefined> {
   const active = vscode.window.activeTextEditor?.document;
-  if (active && isVqlLike(active)) return active;
+  if (active && isVqlLike(active)) return active.uri;
 
   const picked = await vscode.window.showOpenDialog({
     canSelectMany: false,
@@ -45,13 +47,15 @@ async function resolveVqlDocument(): Promise<vscode.TextDocument | undefined> {
     filters: { 'Denodo VQL': ['vql'], 'All files': ['*'] }
   });
   if (!picked || picked.length === 0) return undefined;
-  return vscode.workspace.openTextDocument(picked[0]);
+  return picked[0];
 }
 
 function isVqlLike(doc: vscode.TextDocument): boolean {
   if (doc.languageId === 'vql') return true;
   if (doc.uri.path.toLowerCase().endsWith('.vql')) return true;
-  // Heuristic for untitled/unknown docs: contains VQL CREATE statements.
+  // Heuristic for untitled/unknown docs: contains VQL CREATE statements. For
+  // very large files getText() is empty (not synced), so this only fires for
+  // small in-memory buffers — the .vql extension check above covers big files.
   const head = doc.getText().slice(0, 4000).toUpperCase();
   return /\bCREATE\s+(OR\s+REPLACE\s+)?(WRAPPER|DATASOURCE|TABLE|VIEW|INTERFACE|ASSOCIATION)\b/.test(head);
 }

@@ -13,8 +13,10 @@
  */
 
 import * as vscode from 'vscode';
+import { promises as fsp } from 'node:fs';
 import { ElementKind, KIND_LABEL, VqlElement, VqlGraph } from '../parser/model';
 import { buildGraph } from '../graph/graphBuilder';
+import { buildLineIndex, offsetToLine } from '../parser/scanner';
 
 interface LiteNode {
   id: string;
@@ -40,11 +42,11 @@ export class GraphPanel {
   private pending: (() => void) | undefined;
   private diagnostics: vscode.DiagnosticCollection | undefined;
 
-  static show(context: vscode.ExtensionContext, doc: vscode.TextDocument, diagnostics: vscode.DiagnosticCollection) {
+  static show(context: vscode.ExtensionContext, uri: vscode.Uri, diagnostics: vscode.DiagnosticCollection) {
     const column = vscode.ViewColumn.Beside;
     if (GraphPanel.current) {
       GraphPanel.current.panel.reveal(column);
-      GraphPanel.current.load(doc, diagnostics);
+      void GraphPanel.current.load(uri, diagnostics);
       return;
     }
     const panel = vscode.window.createWebviewPanel(
@@ -58,7 +60,29 @@ export class GraphPanel {
       }
     );
     GraphPanel.current = new GraphPanel(context, panel);
-    GraphPanel.current.load(doc, diagnostics);
+    void GraphPanel.current.load(uri, diagnostics);
+  }
+
+  /**
+   * Read the VQL source for a URI. Prefers a live editor buffer when it actually
+   * has content (so unsaved edits are reflected), but files above VS Code's
+   * 50 MB editor-sync limit are never synced to extensions and yield empty text
+   * there — so we fall through to reading the bytes straight from disk, which is
+   * not subject to that limit. This is what lets the graph work on very large
+   * scripts.
+   */
+  private async readSource(uri: vscode.Uri): Promise<string> {
+    const open = vscode.workspace.textDocuments.find((d) => d.uri.toString() === uri.toString());
+    if (open) {
+      const t = open.getText();
+      if (t.length > 0) return t;
+    }
+    if (uri.scheme === 'file') {
+      return await fsp.readFile(uri.fsPath, 'utf8');
+    }
+    // Remote / virtual filesystems: go through the VS Code FS API.
+    const bytes = await vscode.workspace.fs.readFile(uri);
+    return Buffer.from(bytes).toString('utf8');
   }
 
   private constructor(
@@ -70,13 +94,12 @@ export class GraphPanel {
     this.panel.webview.onDidReceiveMessage((msg) => this.onMessage(msg), null, this.disposables);
   }
 
-  private load(doc: vscode.TextDocument, diagnostics: vscode.DiagnosticCollection) {
-    this.docUri = doc.uri;
+  private async load(uri: vscode.Uri, diagnostics: vscode.DiagnosticCollection) {
+    this.docUri = uri;
     this.diagnostics = diagnostics;
     const cfg = vscode.workspace.getConfiguration('denodoVqlGraph');
-    const text = doc.getText();
 
-    this.panel.title = `Graph: ${shortName(doc.uri)}`;
+    this.panel.title = `Graph: ${shortName(uri)}`;
 
     // Reload the webview HTML every time so the latest media/main.js is used
     // (a retained webview would otherwise keep a stale script). We then wait for
@@ -86,35 +109,41 @@ export class GraphPanel {
     this.pending = undefined;
     this.panel.webview.html = this.html();
 
-    // Parse. For huge documents this runs on the extension host thread; it is a
-    // single linear pass and typically fast. We yield first so the webview can
-    // load and paint its initial state.
-    setTimeout(() => {
-      const graph = buildGraph(text);
-      this.graph = graph;
+    // Read the source from disk (bypasses the editor's 50 MB sync limit). The
+    // await also yields, letting the webview load and paint its initial state
+    // before the parse runs on the extension host thread (a single linear pass).
+    let text: string;
+    try {
+      text = await this.readSource(uri);
+    } catch (err) {
+      this.post({ type: 'error', message: `Could not read ${shortName(uri)}: ${String(err)}` });
+      return;
+    }
 
-      if (cfg.get<boolean>('reportMissingViews', true)) {
-        this.publishDiagnostics(doc, graph, diagnostics);
-      } else {
-        diagnostics.delete(doc.uri);
+    const graph = buildGraph(text);
+    this.graph = graph;
+
+    if (cfg.get<boolean>('reportMissingViews', true)) {
+      this.publishDiagnostics(uri, graph, text, diagnostics);
+    } else {
+      diagnostics.delete(uri);
+    }
+
+    const max = cfg.get<number>('maxRenderNodes', 2500);
+    const depth = cfg.get<number>('neighbourhoodDepth', 2);
+    const mode: 'full' | 'focus' = graph.elements.size <= max ? 'full' : 'focus';
+
+    const send = () => {
+      this.post({ type: 'init', mode, stats: graph.stats, neighbourhoodDepth: depth, maxRenderNodes: max });
+      if (mode === 'full') {
+        const { nodes, edges } = this.fullPayload();
+        this.post({ type: 'graph', nodes, edges });
       }
+    };
 
-      const max = cfg.get<number>('maxRenderNodes', 2500);
-      const depth = cfg.get<number>('neighbourhoodDepth', 2);
-      const mode: 'full' | 'focus' = graph.elements.size <= max ? 'full' : 'focus';
-
-      const send = () => {
-        this.post({ type: 'init', mode, stats: graph.stats, neighbourhoodDepth: depth, maxRenderNodes: max });
-        if (mode === 'full') {
-          const { nodes, edges } = this.fullPayload();
-          this.post({ type: 'graph', nodes, edges });
-        }
-      };
-
-      // If the webview already signalled ready, send now; otherwise queue it.
-      if (this.ready) send();
-      else this.pending = send;
-    }, 0);
+    // If the webview already signalled ready, send now; otherwise queue it.
+    if (this.ready) send();
+    else this.pending = send;
   }
 
   private onMessage(msg: any) {
@@ -289,18 +318,17 @@ export class GraphPanel {
       editor.selection = new vscode.Selection(pos, pos);
       editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
     } catch {
-      /* document may have been closed */
+      // Files above the editor's 50 MB limit cannot be opened as a text editor,
+      // so navigation isn't possible — tell the user where the definition is.
+      vscode.window.showInformationMessage(
+        `"${el.name}" is at line ${el.line} — the file is too large for VS Code to open in the editor.`
+      );
     }
   }
 
   private async reloadCurrent() {
     if (!this.docUri || !this.diagnostics) return;
-    try {
-      const doc = await vscode.workspace.openTextDocument(this.docUri);
-      this.load(doc, this.diagnostics);
-    } catch {
-      /* document may have been closed */
-    }
+    void this.load(this.docUri, this.diagnostics);
   }
 
   /** Copy the VQL for an element, optionally with its whole upstream lineage. */
@@ -314,8 +342,7 @@ export class GraphPanel {
     }
     let src: string;
     try {
-      const doc = await vscode.workspace.openTextDocument(this.docUri);
-      src = doc.getText();
+      src = await this.readSource(this.docUri);
     } catch {
       return;
     }
@@ -363,31 +390,66 @@ export class GraphPanel {
     };
     dfs(id);
 
-    const typeStatements = this.collectRequiredTypes(order, src);
-    const folderStatements = this.collectFolders(order, typeStatements, src);
+    // Dependencies can span several databases (e.g. an association in `sales2`
+    // whose endpoints live in `sales`). Emit one `CONNECT DATABASE` block per
+    // database — each with its own folders and types — switching context as the
+    // dependency order moves between databases, so nothing is recreated in the
+    // wrong database.
+    const NO_DB = '';
+    const foldersFor = new Map<string, string[]>();
+    const typesFor = new Map<string, string[]>();
+    let folderCount = 0;
+    let typeCount = 0;
+    let anyNoDb = false;
+    for (const el of order) {
+      const key = el.database ?? NO_DB;
+      if (!el.database) anyNoDb = true;
+      if (!typesFor.has(key)) {
+        const group = order.filter((e) => (e.database ?? NO_DB) === key);
+        const types = this.collectRequiredTypes(group, src);
+        const folders = this.collectFolders(group, types, src);
+        typesFor.set(key, types);
+        foldersFor.set(key, folders);
+        typeCount += types.length;
+        folderCount += folders.length;
+      }
+    }
 
-    // Assemble in valid import order:
-    //   1. database context  2. folders (parents first)  3. types  4. elements
-    const targetDb = g.elements.get(id)?.database ?? g.database;
     let header = `# VQL for "${id}" and its upstream dependencies\n`;
-    if (!targetDb) {
-      header += `# WARNING: no CONNECT DATABASE found in the source; add one before importing.\n`;
+    if (anyNoDb) {
+      header += `# WARNING: some elements have no CONNECT DATABASE context; set one before importing.\n`;
     }
     if (missing.size) {
       header += `# NOTE: skipped ${missing.size} undefined reference(s): ${Array.from(missing).join(', ')}\n`;
     }
 
+    // Walk the dependency order, opening a new database block on each switch and
+    // emitting that database's folders/types the first time it is entered.
     const parts: string[] = [];
-    if (targetDb) parts.push(`CONNECT DATABASE ${targetDb};`);
-    for (const f of folderStatements) parts.push(f);
-    for (const t of typeStatements) parts.push(t);
-    for (const el of order) parts.push(stmt(src, el));
+    const opened = new Set<string>();
+    let contextSet = false;
+    let currentDb: string | undefined;
+    for (const el of order) {
+      const db = el.database;
+      const key = db ?? NO_DB;
+      if (!contextSet || db !== currentDb) {
+        if (db) parts.push(`CONNECT DATABASE ${db};`);
+        currentDb = db;
+        contextSet = true;
+      }
+      if (!opened.has(key)) {
+        opened.add(key);
+        for (const f of foldersFor.get(key) ?? []) parts.push(f);
+        for (const t of typesFor.get(key) ?? []) parts.push(t);
+      }
+      parts.push(stmt(src, el));
+    }
 
     return {
       text: header + '\n' + parts.join('\n\n') + '\n',
       elementCount: order.length,
-      typeCount: typeStatements.length,
-      folderCount: folderStatements.length,
+      typeCount,
+      folderCount,
       missing: Array.from(missing)
     };
   }
@@ -480,7 +542,7 @@ export class GraphPanel {
     });
   }
 
-  private publishDiagnostics(doc: vscode.TextDocument, graph: VqlGraph, coll: vscode.DiagnosticCollection) {
+  private publishDiagnostics(uri: vscode.Uri, graph: VqlGraph, text: string, coll: vscode.DiagnosticCollection) {
     const byLine = new Map<number, string[]>();
     for (const el of graph.elements.values()) {
       if (!el.defined) continue;
@@ -494,20 +556,30 @@ export class GraphPanel {
       byLine.set(key, (byLine.get(key) ?? []).concat(names));
     }
 
+    // Positions are computed from our own line index rather than the TextDocument
+    // so this works for files above the 50 MB editor-sync limit (which have no
+    // synced document). Cap the count so a pathological file cannot flood the
+    // Problems panel with hundreds of thousands of entries.
+    const MAX_DIAGS = 2000;
+    const lineStarts = buildLineIndex(text);
     const diags: vscode.Diagnostic[] = [];
     for (const [offset, refs] of byLine) {
-      const pos = doc.positionAt(offset);
-      const lineRange = doc.lineAt(pos.line).range;
+      if (diags.length >= MAX_DIAGS) break;
+      const line = offsetToLine(lineStarts, offset) - 1; // to 0-based
+      const startCol = offset - lineStarts[line];
+      const lineEnd = line + 1 < lineStarts.length ? lineStarts[line + 1] - 1 : text.length;
+      const endCol = Math.max(startCol + 1, lineEnd - lineStarts[line]);
+      const range = new vscode.Range(line, startCol, line, endCol);
       const unique = Array.from(new Set(refs));
       const d = new vscode.Diagnostic(
-        lineRange,
+        range,
         `Denodo VQL: references undefined element${unique.length > 1 ? 's' : ''}: ${unique.join(', ')}`,
         vscode.DiagnosticSeverity.Warning
       );
       d.source = 'Denodo VQL Graph';
       diags.push(d);
     }
-    coll.set(doc.uri, diags);
+    coll.set(uri, diags);
   }
 
   // ---- webview plumbing -------------------------------------------------
