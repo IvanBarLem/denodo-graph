@@ -41,10 +41,20 @@ export interface VqlElement {
   deps: Dependency[];
   /** 1-based line where the element is defined (or first referenced, if missing). */
   line: number;
-  /** 0-based character offset of the definition in the source. */
+  /** 0-based character offset of the definition (the CREATE keyword) in the source. */
   offset: number;
+  /** 0-based character offset just past the statement body (excludes ';'). */
+  end: number;
   /** false = only referenced, never CREATEd => a "missing" element. */
   defined: boolean;
+}
+
+/** A CREATE TYPE / CREATE FOLDER definition. Not a graph node, but retained so
+ * it can be emitted alongside elements when copying importable VQL. */
+export interface TypeDef {
+  name: string;
+  offset: number;
+  end: number;
 }
 
 export interface GraphStats {
@@ -61,6 +71,12 @@ export interface VqlGraph {
   elements: Map<string, VqlElement>;
   /** reverse index: id -> ids that depend on it (downstream / "used by"). */
   dependents: Map<string, string[]>;
+  /** name -> CREATE TYPE definition (kept for copy-with-dependencies). */
+  types: Map<string, TypeDef>;
+  /** folder path -> CREATE FOLDER definition (kept so copied VQL is importable). */
+  folders: Map<string, TypeDef>;
+  /** The database context (from CONNECT/CREATE DATABASE), if the script has one. */
+  database?: string;
   stats: GraphStats;
 }
 

@@ -33,6 +33,13 @@ test('wrapper -> datasource dependency', () => {
   assert.deepEqual(w!.deps.map((d) => d.ref), ['ds_oracle']);
 });
 
+test('wrapper OUTPUTSCHEMA fields are parsed', () => {
+  const w = g.elements.get('customer_w')!;
+  assert.deepEqual(w.fields.map((f) => f.name), ['id', 'name']);
+  assert.equal(w.fields[0].type, 'Integer');
+  assert.equal(w.fields[1].type, 'String');
+});
+
 test('base view -> wrapper dependency and fields', () => {
   const bv = g.elements.get('bv_customer')!;
   assert.equal(bv.kind, 'baseView');
@@ -75,6 +82,25 @@ test('association references both endpoints', () => {
 test('dependents (used-by) reverse index', () => {
   const usedBy = g.dependents.get('bv_customer')!.sort();
   assert.deepEqual(usedBy, ['assoc_customer_orders', 'v_customer_orders']);
+});
+
+test('captures CREATE TYPE separately and records source spans', () => {
+  // CREATE TYPE is not a graph node, but is retained for copy-with-dependencies.
+  assert.ok(g.types.has('my_record'), 'my_record captured in types map');
+  assert.ok(!g.elements.has('my_record'), 'my_record is not a graph element');
+
+  const bv = g.elements.get('bv_customer')!;
+  assert.ok(bv.end > bv.offset, 'element has a source span');
+  const text = src.slice(bv.offset, bv.end);
+  assert.match(text, /^CREATE OR REPLACE TABLE bv_customer/);
+  assert.match(text, /WRAPPER \(JDBC customer_w\)\s*$/);
+
+  const t = g.types.get('my_record')!;
+  assert.match(src.slice(t.offset, t.end), /^CREATE OR REPLACE TYPE my_record/);
+});
+
+test('captures the database context for importable copies', () => {
+  assert.equal(g.database, 'sales');
 });
 
 test('semicolons inside string literals do not split statements', () => {

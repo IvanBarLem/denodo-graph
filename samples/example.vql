@@ -53,7 +53,7 @@ AS SELECT c.id AS customer_id,
 
 # ---- Derived view over a derived view + a MISSING view ----
 CREATE OR REPLACE VIEW v_customer_summary FOLDER = '/03 - business'
-AS SELECT customer_id, customer_name, sum(amount) AS total
+AS SELECT customer_id, customer_name, sum(amount) AS total, other_view.other_field
    FROM v_customer_orders
    LEFT JOIN bv_regions ON (v_customer_orders.customer_id = bv_regions.customer_id)
    GROUP BY customer_id, customer_name;

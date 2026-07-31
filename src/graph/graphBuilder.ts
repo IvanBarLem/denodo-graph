@@ -7,9 +7,15 @@
  * over the resulting elements, so total cost is O(size of script).
  */
 
-import { ElementKind, emptyStats, VqlElement, VqlGraph } from '../parser/model';
+import { ElementKind, emptyStats, TypeDef, VqlElement, VqlGraph } from '../parser/model';
 import { buildLineIndex, offsetToLine, splitStatements, stripComments } from '../parser/scanner';
-import { classifyStatement, ParseOptions } from '../parser/vqlParser';
+import {
+  classifyStatement,
+  matchDatabase,
+  matchFolderPath,
+  matchTypeName,
+  ParseOptions
+} from '../parser/vqlParser';
 
 export interface BuildOptions extends ParseOptions {
   /** Optional progress callback (0..1) for very large inputs. */
@@ -19,6 +25,9 @@ export interface BuildOptions extends ParseOptions {
 export function buildGraph(src: string, opts: BuildOptions): VqlGraph {
   const started = Date.now();
   const elements = new Map<string, VqlElement>();
+  const types = new Map<string, TypeDef>();
+  const folders = new Map<string, TypeDef>();
+  let database: string | undefined;
   const lineStarts = buildLineIndex(src);
 
   const statements = splitStatements(src);
@@ -34,17 +43,34 @@ export function buildGraph(src: string, opts: BuildOptions): VqlGraph {
     const defOffset = raw.start + (createIdx >= 0 ? createIdx : 0);
     const line = offsetToLine(lineStarts, defOffset);
 
+    const stmtEnd = raw.start + raw.text.length;
+
     const el = classifyStatement(body, line, defOffset, opts);
     if (el) {
+      el.end = stmtEnd;
       const existing = elements.get(el.id);
       if (!existing || !existing.defined) {
         // New element, or upgrading a previously-missing placeholder.
-        if (existing && !existing.defined) {
-          // Preserve nothing from the placeholder; the real definition wins.
-        }
         elements.set(el.id, el);
       }
       // If already defined (duplicate CREATE OR REPLACE), keep the first.
+    } else {
+      // Not a graph element; capture supporting statements so copied VQL is
+      // importable: CREATE TYPE, CREATE FOLDER, and the database context.
+      const typeName = matchTypeName(body);
+      if (typeName) {
+        if (!types.has(typeName)) types.set(typeName, { name: typeName, offset: defOffset, end: stmtEnd });
+      } else {
+        const folder = matchFolderPath(body);
+        if (folder) {
+          if (!folders.has(folder)) folders.set(folder, { name: folder, offset: defOffset, end: stmtEnd });
+        } else {
+          const db = matchDatabase(body);
+          // CONNECT DATABASE is the working context and wins; CREATE DATABASE is
+          // only a fallback when no CONNECT was seen.
+          if (db && (db.connect || database === undefined)) database = db.name;
+        }
+      }
     }
 
     if (opts.onProgress && s % progressEvery === 0) {
@@ -89,7 +115,7 @@ export function buildGraph(src: string, opts: BuildOptions): VqlGraph {
   stats.parseMs = Date.now() - started;
 
   if (opts.onProgress) opts.onProgress(1);
-  return { elements, dependents, stats };
+  return { elements, dependents, types, folders, database, stats };
 }
 
 function makeMissing(id: string, expect: ElementKind, line: number, offset: number): VqlElement {
@@ -101,6 +127,7 @@ function makeMissing(id: string, expect: ElementKind, line: number, offset: numb
     deps: [],
     line,
     offset,
+    end: offset,
     defined: false
   };
 }

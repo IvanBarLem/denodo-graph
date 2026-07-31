@@ -153,6 +153,34 @@ function parseFieldList(content: string): Field[] {
 }
 
 /**
+ * Parse a wrapper's OUTPUTSCHEMA field list. Wrappers expose the columns they
+ * retrieve from the source, in the form:
+ *   OUTPUTSCHEMA ( localName = 'SOURCE' :'java.lang.Integer' (OPT) (...), ... )
+ */
+function parseWrapperFields(body: string): Field[] {
+  const m = /\bOUTPUTSCHEMA\b/i.exec(body);
+  if (!m) return [];
+  const paren = firstParenGroup(body, m.index + m[0].length);
+  if (!paren) return [];
+  const fields: Field[] = [];
+  for (const part of splitTopLevel(paren.content)) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    const f =
+      /^("(?:[^"]|"")+"|[A-Za-z0-9_$#]+)\s*=\s*'(?:[^']|'')*'\s*:\s*'([^']*)'/.exec(trimmed);
+    if (f) {
+      const jt = f[2];
+      const dot = jt.lastIndexOf('.');
+      fields.push({ name: unquote(f[1]), type: dot >= 0 ? jt.slice(dot + 1) : jt });
+    } else {
+      const f2 = /^("(?:[^"]|"")+"|[A-Za-z0-9_$#]+)/.exec(trimmed);
+      if (f2) fields.push({ name: unquote(f2[1]) });
+    }
+  }
+  return fields;
+}
+
+/**
  * Classify one statement and return the element it defines, or null if it is
  * not a graph-relevant statement (CREATE TYPE, CREATE DATABASE, SET, ALTER,
  * stored procedures, web services, etc.).
@@ -198,7 +226,8 @@ export function classifyStatement(
     const deps: Dependency[] = [];
     const ds = RE_DATASOURCENAME.exec(body);
     if (ds) deps.push({ ref: stripQualifier(unquote(ds[1]), opts), expect: 'datasource' });
-    return base('wrapper', name, { subtype, deps, folder: folderOf(body), line, offset });
+    const fields = parseWrapperFields(body);
+    return base('wrapper', name, { subtype, deps, fields, folder: folderOf(body), line, offset });
   }
 
   if ((m = RE_TABLE.exec(body))) {
@@ -259,6 +288,34 @@ function base(
     deps: extra.deps ?? [],
     line: extra.line,
     offset: extra.offset,
+    end: extra.end ?? extra.offset,
     defined: true
   };
+}
+
+const RE_TYPE = /^\s*CREATE\s+(?:OR\s+REPLACE\s+)?TYPE\s+("(?:[^"]|"")+"|[A-Za-z0-9_./]+)/i;
+
+/** Match a CREATE TYPE statement, returning the (unquoted) type name or null. */
+export function matchTypeName(body: string): string | null {
+  const m = RE_TYPE.exec(body);
+  return m ? unquote(m[1]) : null;
+}
+
+const RE_FOLDER_DEF = /^\s*CREATE\s+(?:OR\s+REPLACE\s+)?FOLDER\s+'((?:[^']|'')*)'/i;
+const RE_CONNECT_DB = /^\s*CONNECT\s+DATABASE\s+("(?:[^"]|"")+"|[A-Za-z0-9_$#./]+)/i;
+const RE_CREATE_DB = /^\s*CREATE\s+(?:OR\s+REPLACE\s+)?DATABASE\s+("(?:[^"]|"")+"|[A-Za-z0-9_$#./]+)/i;
+
+/** Match a CREATE FOLDER statement, returning the folder path or null. */
+export function matchFolderPath(body: string): string | null {
+  const m = RE_FOLDER_DEF.exec(body);
+  return m ? m[1].replace(/''/g, "'") : null;
+}
+
+/** Match CONNECT DATABASE / CREATE DATABASE, returning the database name + which. */
+export function matchDatabase(body: string): { name: string; connect: boolean } | null {
+  const c = RE_CONNECT_DB.exec(body);
+  if (c) return { name: unquote(c[1]), connect: true };
+  const cr = RE_CREATE_DB.exec(body);
+  if (cr) return { name: unquote(cr[1]), connect: false };
+  return null;
 }
