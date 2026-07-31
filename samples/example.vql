@@ -1,0 +1,78 @@
+# #############################################
+# Sample Denodo VQL for the graph extension
+# #############################################
+
+CREATE DATABASE sales;
+CONNECT DATABASE sales;
+
+# ---- Data source ----
+CREATE OR REPLACE DATASOURCE JDBC ds_oracle
+    DRIVERCLASSNAME = 'oracle.jdbc.OracleDriver'
+    DATABASEURI = 'jdbc:oracle:thin:@//host:1521/ORCL'
+    USERNAME = 'app'
+    USERPASSWORD = 'secret ; with semicolon and '' quote'
+    CLASSPATH = 'oracle';
+
+# ---- Wrapper referencing the data source ----
+CREATE OR REPLACE WRAPPER JDBC customer_w
+    DATASOURCENAME=ds_oracle
+    RELATIONNAME='CUSTOMER'
+    OUTPUTSCHEMA (
+        id = 'ID' :'java.lang.Integer' (OPT) (sourcetypeid='4'),
+        name = 'NAME' :'java.lang.String' (sourcetypeid='12')
+    );
+
+# ---- Base view over the wrapper ----
+CREATE OR REPLACE TABLE bv_customer I18N us_pst (
+    id:int (sourcetypeid = '4'),
+    name:text (sourcetypeid = '12'),
+    country:text
+)
+FOLDER = '/01 - connectivity/base views'
+CACHE OFF
+DATASOURCE JDBC ds_oracle
+WRAPPER (JDBC customer_w);
+
+CREATE OR REPLACE TABLE bv_orders I18N us_pst (
+    order_id:int,
+    customer_id:int,
+    amount:decimal
+)
+FOLDER = '/01 - connectivity/base views'
+WRAPPER (JDBC orders_w);
+
+# ---- Derived view joining two base views ----
+CREATE OR REPLACE VIEW v_customer_orders FOLDER = '/02 - integration'
+AS SELECT c.id AS customer_id,
+          c.name AS customer_name,
+          o.order_id AS order_id,
+          o.amount AS amount
+   FROM bv_customer AS c
+   INNER JOIN bv_orders AS o ON (c.id = o.customer_id)
+   WHERE o.amount > 0;
+
+# ---- Derived view over a derived view + a MISSING view ----
+CREATE OR REPLACE VIEW v_customer_summary FOLDER = '/03 - business'
+AS SELECT customer_id, customer_name, sum(amount) AS total
+   FROM v_customer_orders
+   LEFT JOIN bv_regions ON (v_customer_orders.customer_id = bv_regions.customer_id)
+   GROUP BY customer_id, customer_name;
+
+# ---- Interface view ----
+CREATE OR REPLACE INTERFACE VIEW iv_customer_summary (
+    customer_id:int,
+    customer_name:text,
+    total:decimal
+)
+SET IMPLEMENTATION v_customer_summary
+FOLDER = '/04 - published';
+
+# ---- Association between two base views ----
+CREATE OR REPLACE ASSOCIATION assoc_customer_orders REFERENTIAL CONSTRAINT
+    FOLDER = '/02 - integration'
+    ENDPOINT customer bv_customer PRINCIPAL (1,1)
+    ENDPOINT orders bv_orders (0,*)
+    MAPPING ON (bv_customer.id = bv_orders.customer_id);
+
+# ---- A type (must be IGNORED by the graph) ----
+CREATE OR REPLACE TYPE my_record AS REGISTER OF (a:int, b:text);

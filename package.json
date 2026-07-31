@@ -1,0 +1,113 @@
+{
+  "name": "denodo-vql-graph",
+  "displayName": "Denodo VQL Graph",
+  "description": "Visualize a Denodo VQL script as an interactive node graph of data sources, wrappers, base views, derived views, interface views and associations. Built for very large scripts (millions of lines).",
+  "version": "0.1.0",
+  "publisher": "local",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Visualization",
+    "Programming Languages"
+  ],
+  "keywords": [
+    "denodo",
+    "vql",
+    "graph",
+    "lineage",
+    "data virtualization"
+  ],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "vql",
+        "aliases": [
+          "Denodo VQL",
+          "vql"
+        ],
+        "extensions": [
+          ".vql"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "denodoVqlGraph.openGraph",
+        "title": "Open Graph",
+        "category": "Denodo VQL",
+        "icon": "$(type-hierarchy)"
+      },
+      {
+        "command": "denodoVqlGraph.revealElement",
+        "title": "Reveal Element In Editor",
+        "category": "Denodo VQL"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "denodoVqlGraph.openGraph",
+          "when": "resourceExtname == .vql",
+          "group": "navigation@9"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "denodoVqlGraph.openGraph",
+          "when": "resourceExtname == .vql",
+          "group": "navigation"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "denodoVqlGraph.revealElement",
+          "when": "false"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Denodo VQL Graph",
+      "properties": {
+        "denodoVqlGraph.maxRenderNodes": {
+          "type": "number",
+          "default": 2500,
+          "markdownDescription": "Maximum number of nodes rendered at once. Above this threshold the graph opens in **focus mode** (search a node, then expand its neighbourhood) instead of drawing the whole graph, to stay responsive on huge scripts."
+        },
+        "denodoVqlGraph.neighbourhoodDepth": {
+          "type": "number",
+          "default": 2,
+          "description": "How many dependency hops to expand around a focused node in focus mode."
+        },
+        "denodoVqlGraph.reportMissingViews": {
+          "type": "boolean",
+          "default": true,
+          "description": "Report references to undefined elements (missing views) as warnings in the Problems panel."
+        },
+        "denodoVqlGraph.stripDatabaseQualifier": {
+          "type": "boolean",
+          "default": true,
+          "description": "Treat 'database.view' references as just 'view' when resolving dependencies."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "vscode:prepublish": "node esbuild.js --production",
+    "test:parser": "node --test dist-test/*.test.js",
+    "build:test": "tsc -p tsconfig.test.json"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.90.0",
+    "cytoscape": "^3.34.0",
+    "esbuild": "^0.23.0",
+    "typescript": "^5.5.0"
+  }
+}
