@@ -56,6 +56,29 @@
     ICON_MISS[k] = svgIcon(ICON_PATHS[k], MISSING_COLOR);
   }
 
+  // User-tunable visual design (the "Design" menu). Persisted via vscode state
+  // so choices survive a reload. Kept flat and primitive so it serializes
+  // trivially and threads straight into the shared stylesheet.
+  const DEFAULT_DESIGN = {
+    edgeWidth: 1.5, // relation line thickness
+    curve: 'bezier', // 'bezier' | 'straight' | 'taxi' (orthogonal)
+    arrows: true, // draw direction arrowheads
+    nodeSize: 48, // node width/height in px
+    labels: 'auto', // 'auto' (cull when tiny) | 'always' | 'off'
+    showBoxes: true // draw the database grouping boxes
+  };
+
+  function loadDesign() {
+    const saved = (vscode.getState && vscode.getState()) || null;
+    const d = saved && saved.design;
+    return Object.assign({}, DEFAULT_DESIGN, d && typeof d === 'object' ? d : {});
+  }
+  function saveDesign() {
+    if (!vscode.setState) return;
+    const prev = (vscode.getState && vscode.getState()) || {};
+    vscode.setState(Object.assign({}, prev, { design: state.design }));
+  }
+
   const state = {
     mode: 'full',
     depth: 2,
@@ -64,7 +87,8 @@
     cy: null,
     selected: null,
     colors: null, // { FG, BG, EDGE } captured at init, for stylesheet rebuilds
-    fast: false // whether the fast (large-graph) stylesheet is currently active
+    fast: false, // whether the fast (large-graph) stylesheet is currently active
+    design: loadDesign()
   };
 
   // Above this many rendered nodes, switch to a cheaper stylesheet: straight
@@ -79,6 +103,8 @@
     typesBtn: document.getElementById('typesBtn'),
     typesBtnLabel: document.getElementById('typesBtnLabel'),
     typesMenu: document.getElementById('typesMenu'),
+    designBtn: document.getElementById('designBtn'),
+    designMenu: document.getElementById('designMenu'),
     layout: document.getElementById('layout'),
     reload: document.getElementById('reload'),
     fit: document.getElementById('fit'),
@@ -94,18 +120,25 @@
 
   // Build the stylesheet. Colours and icons are attached per-kind via selectors
   // (stored once), NOT per node, so node data stays minimal: {id, label, kind}.
-  function buildStyle(FG, BG, EDGE, fast) {
+  function buildStyle(FG, BG, EDGE, fast, design) {
+    const d = design || DEFAULT_DESIGN;
     // In fast mode, labels lose their outline (a second stroke pass per label)
-    // and edges are drawn as straight segments instead of beziers.
+    // and edges are forced straight — both are major canvas costs at scale, so
+    // the auto perf mode overrides the user's curve/outline choice.
     const nodeOutline = fast ? 0 : 3;
-    const edgeCurve = fast ? 'straight' : 'bezier';
+    const edgeCurve = fast ? 'straight' : d.curve;
+    // Label visibility: 'off' draws no label at all; 'always' keeps labels at
+    // every zoom; 'auto' culls them once they'd be too small to read (which is
+    // what keeps a fitted large graph responsive).
+    const nodeLabel = d.labels === 'off' ? '' : 'data(label)';
+    const nodeMinZoom = d.labels === 'always' ? 0 : 7;
     const style = [
       {
         selector: 'node',
         style: {
           shape: 'round-rectangle',
-          width: 48,
-          height: 48,
+          width: d.nodeSize,
+          height: d.nodeSize,
           'background-color': KIND_COLOR.unknown,
           'background-fit': 'none',
           'background-width': '66%',
@@ -115,7 +148,7 @@
           'border-width': 2,
           'border-color': BG,
           'border-opacity': 0.35,
-          label: 'data(label)',
+          label: nodeLabel,
           color: FG,
           'font-size': 12,
           'font-weight': 'bold',
@@ -125,28 +158,27 @@
           'text-max-width': 150,
           'text-outline-width': nodeOutline,
           'text-outline-color': BG,
-          // Skip drawing labels once they'd be smaller than this many px on
-          // screen. When a large graph is fit to the viewport every label is
-          // tiny, and rasterizing thousands of outlined labels is the single
-          // biggest render cost — this culls them until the user zooms in.
-          'min-zoomed-font-size': 7,
+          'min-zoomed-font-size': nodeMinZoom,
           'z-index': 1
         }
       }
     ];
     // Database box (compound parent): a labelled container behind its elements.
+    // When hidden it is kept as a layout parent (so elements stay grouped) but
+    // rendered invisible — no fill, border, or label.
+    const boxes = d.showBoxes;
     style.push({
       selector: 'node.dbbox',
       style: {
         shape: 'round-rectangle',
         'background-color': getCssVar('--vscode-foreground', '#888'),
-        'background-opacity': 0.05,
+        'background-opacity': boxes ? 0.05 : 0,
         'background-image': 'none',
-        'border-width': 1.5,
+        'border-width': boxes ? 1.5 : 0,
         'border-color': getCssVar('--vscode-foreground', '#888'),
         'border-opacity': 0.4,
         'border-style': 'solid',
-        label: 'data(label)',
+        label: boxes ? 'data(label)' : '',
         'font-size': 15,
         'font-weight': 'bold',
         color: FG,
@@ -156,7 +188,7 @@
         'text-outline-width': 3,
         'text-outline-color': BG,
         'min-zoomed-font-size': 6,
-        padding: 26,
+        padding: boxes ? 26 : 14,
         'z-index': 0,
         'z-compound-depth': 'bottom',
         'min-width': 40,
@@ -212,19 +244,28 @@
     style.push({
       selector: 'edge',
       style: {
-        width: 1,
+        width: d.edgeWidth,
         'line-color': EDGE,
         'target-arrow-color': EDGE,
-        'target-arrow-shape': 'triangle',
+        'target-arrow-shape': d.arrows ? 'triangle' : 'none',
         'arrow-scale': 0.7,
         'curve-style': edgeCurve,
+        // Ignored unless curve-style is 'taxi'; makes orthogonal edges run
+        // vertically, matching the bottom-to-top hierarchy layers.
+        'taxi-direction': 'vertical',
+        'taxi-turn': '50%',
         opacity: 0.55
       }
     });
     style.push({ selector: 'edge.dim', style: { opacity: 0.05 } });
     style.push({
       selector: 'edge.hl',
-      style: { 'line-color': '#f1c40f', 'target-arrow-color': '#f1c40f', opacity: 1, width: 2 }
+      style: {
+        'line-color': '#f1c40f',
+        'target-arrow-color': '#f1c40f',
+        opacity: 1,
+        width: Math.max(2, d.edgeWidth + 0.75)
+      }
     });
     return style;
   }
@@ -245,7 +286,7 @@
       motionBlur: false,
       maxZoom: 3,
       minZoom: 0.02,
-      style: buildStyle(FG, BG, EDGE, false)
+      style: buildStyle(FG, BG, EDGE, false, state.design)
     });
 
     // Cytoscape has no native double-tap event, so detect it manually.
@@ -316,7 +357,20 @@
     if (!styler || !styler.fromJson) return; // no renderer style (e.g. headless)
     state.fast = wantFast;
     const c = state.colors;
-    styler.fromJson(buildStyle(c.FG, c.BG, c.EDGE, wantFast)).update();
+    styler.fromJson(buildStyle(c.FG, c.BG, c.EDGE, wantFast, state.design)).update();
+  }
+
+  // Re-apply the current design settings to the live graph. Rebuilding the
+  // shared stylesheet is O(1) in element count (styles are stored once, not per
+  // node), so this stays cheap even on large graphs. A curve change to/from
+  // 'taxi' needs the edges recomputed, which .update() handles.
+  function applyDesign() {
+    const cy = state.cy;
+    if (!cy || !state.colors) return;
+    const styler = cy.style && cy.style();
+    if (!styler || !styler.fromJson) return;
+    const c = state.colors;
+    styler.fromJson(buildStyle(c.FG, c.BG, c.EDGE, state.fast, state.design)).update();
   }
 
   function render(nodes, edges, doLayout) {
@@ -637,6 +691,112 @@
       on === total ? 'Types: all' : on === 0 ? 'Types: none' : 'Types: ' + on + '/' + total;
   }
 
+  // ---------------- design menu ----------------
+
+  // Build the "Design" dropdown: appearance controls that write straight into
+  // state.design, re-style the live graph (applyDesign) and persist the choice.
+  function buildDesignMenu() {
+    const d = state.design;
+    const menu = el.designMenu;
+    const html =
+      '<div class="menu-head"><span>Appearance</span><span>·</span><a data-reset="1">Reset</a></div>' +
+      // Relation (edge) width
+      row(
+        'Relation width',
+        '<input type="range" id="dz-edgew" min="0.5" max="6" step="0.5" value="' + d.edgeWidth + '"/>' +
+          '<span class="mr-val" id="dz-edgew-v">' + d.edgeWidth + '</span>'
+      ) +
+      // Relation style (curve)
+      row(
+        'Relation style',
+        '<select id="dz-curve">' +
+          opt('bezier', 'Curved', d.curve) +
+          opt('straight', 'Straight', d.curve) +
+          opt('taxi', 'Orthogonal', d.curve) +
+          '</select>'
+      ) +
+      // Node size
+      row(
+        'Node size',
+        '<input type="range" id="dz-size" min="28" max="80" step="4" value="' + d.nodeSize + '"/>' +
+          '<span class="mr-val" id="dz-size-v">' + d.nodeSize + '</span>'
+      ) +
+      // Labels
+      row(
+        'Labels',
+        '<select id="dz-labels">' +
+          opt('auto', 'Auto (hide when tiny)', d.labels) +
+          opt('always', 'Always show', d.labels) +
+          opt('off', 'Hidden', d.labels) +
+          '</select>'
+      ) +
+      '<div class="menu-sep"></div>' +
+      // Arrowheads
+      checkRow('dz-arrows', 'Direction arrows', d.arrows) +
+      // Database boxes
+      checkRow('dz-boxes', 'Database boxes', d.showBoxes);
+    menu.innerHTML = html;
+
+    const num = (id) => menu.querySelector('#' + id);
+    // Sliders update live as they are dragged.
+    num('dz-edgew').addEventListener('input', (e) => {
+      state.design.edgeWidth = parseFloat(e.target.value);
+      num('dz-edgew-v').textContent = state.design.edgeWidth;
+      applyDesign();
+      saveDesign();
+    });
+    num('dz-size').addEventListener('input', (e) => {
+      state.design.nodeSize = parseInt(e.target.value, 10);
+      num('dz-size-v').textContent = state.design.nodeSize;
+      applyDesign();
+      saveDesign();
+    });
+    num('dz-curve').addEventListener('change', (e) => {
+      state.design.curve = e.target.value;
+      applyDesign();
+      saveDesign();
+    });
+    num('dz-labels').addEventListener('change', (e) => {
+      state.design.labels = e.target.value;
+      applyDesign();
+      saveDesign();
+    });
+    num('dz-arrows').addEventListener('change', (e) => {
+      state.design.arrows = e.target.checked;
+      applyDesign();
+      saveDesign();
+    });
+    num('dz-boxes').addEventListener('change', (e) => {
+      state.design.showBoxes = e.target.checked;
+      applyDesign();
+      saveDesign();
+    });
+    menu.querySelector('a[data-reset]').addEventListener('click', () => {
+      state.design = Object.assign({}, DEFAULT_DESIGN);
+      applyDesign();
+      saveDesign();
+      buildDesignMenu(); // rebuild so the controls reflect the defaults
+    });
+
+    function row(label, control) {
+      return '<div class="menu-row"><span class="mr-label">' + label + '</span>' + control + '</div>';
+    }
+    function checkRow(id, label, on) {
+      return (
+        '<label class="menu-item"><input type="checkbox" id="' +
+        id +
+        '"' +
+        (on ? ' checked' : '') +
+        '/><span class="mi-label">' +
+        label +
+        '</span></label>'
+      );
+    }
+    function opt(value, label, current) {
+      return '<option value="' + value + '"' + (value === current ? ' selected' : '') + '>' + label + '</option>';
+    }
+  }
+
   function applyKindFilter() {
     const cy = state.cy;
     cy.batch(() => {
@@ -897,6 +1057,7 @@
         state.mode = msg.mode;
         state.depth = msg.neighbourhoodDepth || 2;
         buildTypesMenu();
+        buildDesignMenu();
         buildLegend();
         if (msg.mode === 'focus') {
           const s = msg.stats;
@@ -962,17 +1123,31 @@
     vscode.postMessage({ type: 'reload' });
   });
 
-  // Types dropdown open/close.
-  el.typesBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    const open = el.typesMenu.classList.toggle('hidden');
-    el.typesBtn.setAttribute('aria-expanded', String(!open));
-  });
-  el.typesMenu.addEventListener('click', (e) => e.stopPropagation());
-  document.addEventListener('click', () => {
-    el.typesMenu.classList.add('hidden');
-    el.typesBtn.setAttribute('aria-expanded', 'false');
-  });
+  // Dropdown menus (Types, Design): clicking a button toggles its own menu and
+  // closes the other; clicking inside a menu keeps it open; clicking anywhere
+  // else closes both.
+  function closeMenus(except) {
+    for (const [btn, menu] of [
+      [el.typesBtn, el.typesMenu],
+      [el.designBtn, el.designMenu]
+    ]) {
+      if (menu === except) continue;
+      menu.classList.add('hidden');
+      btn.setAttribute('aria-expanded', 'false');
+    }
+  }
+  function wireDropdown(btn, menu) {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const open = menu.classList.toggle('hidden');
+      btn.setAttribute('aria-expanded', String(!open));
+      if (!open) closeMenus(menu);
+    });
+    menu.addEventListener('click', (e) => e.stopPropagation());
+  }
+  wireDropdown(el.typesBtn, el.typesMenu);
+  wireDropdown(el.designBtn, el.designMenu);
+  document.addEventListener('click', () => closeMenus());
 
   // ---------------- utils ----------------
 
