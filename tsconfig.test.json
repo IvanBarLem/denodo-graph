@@ -11,6 +11,6 @@
     "skipLibCheck": true,
     "moduleResolution": "node"
   },
-  "include": ["src/parser/**/*.ts", "src/graph/**/*.ts", "src/**/*.test.ts"],
-  "exclude": ["node_modules", "dist", "src/extension.ts", "src/webview/**"]
+  "include": ["src/parser/**/*.ts", "src/graph/**/*.ts", "src/diff/**/*.ts", "src/**/*.test.ts"],
+  "exclude": ["node_modules", "dist", "src/extension.ts", "src/webview/**", "src/diff/diffContentProvider.ts"]
 }

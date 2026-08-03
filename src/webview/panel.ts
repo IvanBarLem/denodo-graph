@@ -13,10 +13,10 @@
  */
 
 import * as vscode from 'vscode';
-import { promises as fsp } from 'node:fs';
 import { ElementKind, KIND_LABEL, VqlElement, VqlGraph } from '../parser/model';
 import { buildGraph } from '../graph/graphBuilder';
 import { buildLineIndex, offsetToLine } from '../parser/scanner';
+import { readVqlSource } from '../util/readSource';
 
 interface LiteNode {
   id: string;
@@ -63,26 +63,9 @@ export class GraphPanel {
     void GraphPanel.current.load(uri, diagnostics);
   }
 
-  /**
-   * Read the VQL source for a URI. Prefers a live editor buffer when it actually
-   * has content (so unsaved edits are reflected), but files above VS Code's
-   * 50 MB editor-sync limit are never synced to extensions and yield empty text
-   * there — so we fall through to reading the bytes straight from disk, which is
-   * not subject to that limit. This is what lets the graph work on very large
-   * scripts.
-   */
-  private async readSource(uri: vscode.Uri): Promise<string> {
-    const open = vscode.workspace.textDocuments.find((d) => d.uri.toString() === uri.toString());
-    if (open) {
-      const t = open.getText();
-      if (t.length > 0) return t;
-    }
-    if (uri.scheme === 'file') {
-      return await fsp.readFile(uri.fsPath, 'utf8');
-    }
-    // Remote / virtual filesystems: go through the VS Code FS API.
-    const bytes = await vscode.workspace.fs.readFile(uri);
-    return Buffer.from(bytes).toString('utf8');
+  /** Read VQL source (disk-first, bypassing the 50 MB editor-sync limit). */
+  private readSource(uri: vscode.Uri): Promise<string> {
+    return readVqlSource(uri);
   }
 
   private constructor(
@@ -670,6 +653,12 @@ export class GraphPanel {
         <span id="typesBtnLabel">Types</span><span class="caret">▾</span>
       </button>
       <div id="typesMenu" class="menu hidden"></div>
+    </div>
+    <div class="tb-group">
+      <button id="designBtn" class="dd-btn" aria-haspopup="true" aria-expanded="false" title="Customize appearance (relations, node size, labels, boxes)">
+        <span>Design</span><span class="caret">▾</span>
+      </button>
+      <div id="designMenu" class="menu menu-wide hidden"></div>
     </div>
     <div class="tb-group tb-right">
       <select id="layout" title="Layout">

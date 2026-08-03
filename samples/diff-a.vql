@@ -1,0 +1,19 @@
+# demo VDB — "A" (base)
+CONNECT DATABASE demo;
+
+CREATE OR REPLACE DATASOURCE JDBC ds1
+    DATABASEURI = 'jdbc:x';
+
+CREATE OR REPLACE WRAPPER JDBC w1
+    DATASOURCENAME = ds1;
+
+CREATE OR REPLACE TABLE bv_a (
+    id : int,
+    name : text
+)
+WRAPPER (JDBC w1);
+
+CREATE OR REPLACE VIEW v_a AS
+SELECT a.id AS id, a.name AS name
+FROM bv_a AS a
+WHERE a.id > 0;

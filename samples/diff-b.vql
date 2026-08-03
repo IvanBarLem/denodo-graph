@@ -1,0 +1,23 @@
+/* regenerated export of the SAME demo VDB — different statement order,
+   keyword casing, indentation and whitespace, extra comments. Semantically
+   identical to diff-a.vql, so an order-independent diff shows no changes. */
+
+connect database demo;
+
+create or replace view v_a as
+    select a.id as id,   a.name as name
+    from bv_a as a
+    where a.id   >   0;
+
+# the base view, moved above its own sources on purpose
+create or replace table bv_a (
+    id : INT,
+    name : TEXT
+)
+wrapper (jdbc w1);
+
+create or replace datasource jdbc ds1
+    databaseuri = 'jdbc:x';
+
+create or replace wrapper jdbc w1
+    datasourcename = ds1;
