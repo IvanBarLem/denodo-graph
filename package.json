@@ -21,6 +21,9 @@
   ],
   "activationEvents": [],
   "main": "./dist/extension.js",
+  "extensionDependencies": [
+    "vscode.sql"
+  ],
   "contributes": {
     "languages": [
       {
@@ -35,6 +38,13 @@
         "configuration": "./language-configuration.json"
       }
     ],
+    "grammars": [
+      {
+        "language": "vql",
+        "scopeName": "source.vql",
+        "path": "./syntaxes/vql.tmLanguage.json"
+      }
+    ],
     "commands": [
       {
         "command": "denodoVqlGraph.openGraph",
@@ -46,6 +56,18 @@
         "command": "denodoVqlGraph.revealElement",
         "title": "Reveal Element In Editor",
         "category": "Denodo VQL"
+      },
+      {
+        "command": "denodoVqlGraph.diffFiles",
+        "title": "Diff Two VQL Files (order-independent)",
+        "category": "Denodo VQL",
+        "icon": "$(git-compare)"
+      },
+      {
+        "command": "denodoVqlGraph.diffNode",
+        "title": "Diff Two VQL Files by Node (fast)",
+        "category": "Denodo VQL",
+        "icon": "$(list-tree)"
       }
     ],
     "menus": {
@@ -54,6 +76,18 @@
           "command": "denodoVqlGraph.openGraph",
           "when": "resourceExtname == .vql",
           "group": "navigation@9"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "denodoVqlGraph.diffFiles",
+          "when": "resourceExtname == .vql",
+          "group": "3_compare@1"
+        },
+        {
+          "command": "denodoVqlGraph.diffNode",
+          "when": "resourceExtname == .vql",
+          "group": "3_compare@2"
         }
       ],
       "editor/title": [
